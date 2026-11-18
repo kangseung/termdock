@@ -13,6 +13,44 @@ namespace termdock {
 namespace {
 constexpr char kSettingsKey[] = "storage/dataDir";
 QString g_overrideDir;
+
+// 临时目录里的数据重启就没了，绝不能当成持久的数据目录
+bool isInsideTempDir(const QString &path)
+{
+    const QString tmp = QDir::cleanPath(QDir::tempPath());
+    const QString clean = QDir::cleanPath(path);
+    return clean == tmp || clean.startsWith(tmp + QLatin1Char('/'));
+}
+
+// 不可当持久存放位置：临时目录（重启清空）、CMake 构建目录（重新构建/清目录就没了）
+bool looksVolatile(const QString &dir)
+{
+    if (isInsideTempDir(dir))
+        return true;
+    return QFile::exists(dir + QStringLiteral("/CMakeCache.txt"));
+}
+
+// 把误存到临时目录的数据搬到正式目录（只搬不删，缺什么补什么）
+void migrateFrom(const QString &from, const QString &to)
+{
+    if (from.isEmpty() || to.isEmpty() || from == to)
+        return;
+    QDir target(to);
+    if (!target.exists() && !target.mkpath(to))
+        return;
+    const QStringList files = {QStringLiteral("key"), QStringLiteral("sessions.json"),
+                               QStringLiteral("known_hosts.json"), QStringLiteral("recovery.json")};
+    for (const QString &name : files) {
+        const QString source = from + QLatin1Char('/') + name;
+        const QString destination = to + QLatin1Char('/') + name;
+        if (!QFile::exists(source) || QFile::exists(destination))
+            continue;
+        if (QFile::copy(source, destination)) {
+            QFile::setPermissions(destination, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+            qWarning("termdock: 已把 %s 迁移到 %s", qPrintable(source), qPrintable(destination));
+        }
+    }
+}
 } // namespace
 
 QString AppConfig::executableDir()
@@ -24,9 +62,10 @@ QString AppConfig::executableDir()
 
 QString AppConfig::defaultDataDir()
 {
-    // 优先跟软件放一起（便携式），目录不可写时退回用户配置目录
+    // 优先跟软件放一起（便携式）；但临时目录、开发构建目录不算「软件目录」，
+    // 那些位置重启/重新构建就没了，绝不能放数据
     const QString beside = executableDir() + QStringLiteral("/termdock-data");
-    if (isDirWritable(executableDir()))
+    if (isDirWritable(executableDir()) && !looksVolatile(executableDir()))
         return QDir::cleanPath(beside);
 
     QString base = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
@@ -60,8 +99,17 @@ QString AppConfig::dataDir()
         return QDir::cleanPath(QString::fromUtf8(fromEnv));
 
     const QString stored = QSettings().value(QLatin1String(kSettingsKey)).toString();
-    if (!stored.isEmpty())
-        return QDir::cleanPath(stored);
+    if (!stored.isEmpty()) {
+        const QString clean = QDir::cleanPath(stored);
+        if (!isInsideTempDir(clean))
+            return clean;
+        // 历史版本/测试曾把数据目录写到 /tmp（重启即丢），这里直接纠正
+        const QString fallback = defaultDataDir();
+        qWarning("termdock: 忽略临时目录中的数据目录 %s，改用 %s", qPrintable(clean),
+                 qPrintable(fallback));
+        migrateFrom(clean, fallback);
+        return fallback;
+    }
 
     return defaultDataDir();
 }
@@ -82,6 +130,10 @@ bool AppConfig::setDataDir(const QString &path)
     QDir dir;
     if (!dir.mkpath(clean))
         return false;
+    if (isInsideTempDir(clean)) {
+        qWarning("termdock: 拒绝把数据目录设到临时目录 %s（重启会丢）", qPrintable(clean));
+        return false;
+    }
     if (!isDirWritable(clean))
         return false;
     QSettings().setValue(QLatin1String(kSettingsKey), clean);

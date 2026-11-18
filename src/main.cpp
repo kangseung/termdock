@@ -660,8 +660,9 @@ int main(int argc, char *argv[])
     // ---- 数据保存目录：优先命令行，其次首次启动向导 ----
     const bool headless = parser.isSet(selfTestOption) || parser.isSet(connectTestOption);
     if (parser.isSet(dataDirOption)) {
-        if (!AppConfig::setDataDir(parser.value(dataDirOption)))
-            out() << "数据目录不可写，回退到默认目录\n";
+        // 命令行只是「本次运行」的临时覆盖，绝不写进持久配置
+        AppConfig::setDataDirOverride(parser.value(dataDirOption));
+        out() << "本次运行使用数据目录（不修改默认）：" << AppConfig::dataDir() << "\n";
     } else if (!AppConfig::hasStoredDataDir()) {
         if (headless) {
             AppConfig::setDataDirOverride(AppConfig::defaultDataDir());
