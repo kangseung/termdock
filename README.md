@@ -28,6 +28,20 @@
 
 ---
 
+## 下载（不用编译）
+
+到 [Releases](https://github.com/kangseung/termdock/releases/latest) 页面下载：
+
+| 文件 | 适用 | 用法 |
+| --- | --- | --- |
+| `termdock-*-linux-x86_64.tar.gz` | 任意 glibc 2.34+ 的 x86_64 Linux（**自带 Qt，解压即用**） | `tar xzf … && cd termdock-* && ./termdock` |
+| `termdock_*_amd64.deb` | Debian 12+ / Ubuntu 22.04+ / Mint（体积小，用系统 Qt） | `sudo apt install ./termdock_*.deb` |
+
+不习惯命令行的话，解压后双击目录里的 `termdock` 也能跑；想让它进应用菜单就执行
+`./install.sh --bin ./termdock`。校验和见 Release 页面里的 `SHA256SUMS`。
+
+---
+
 ## 功能
 
 ### 终端

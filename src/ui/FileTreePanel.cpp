@@ -134,6 +134,8 @@ void FileTreePanel::attach(SftpModel *model, SftpWorker *worker)
         m_view->header()->setSectionResizeMode(SftpModel::ModifiedColumn,
                                               QHeaderView::ResizeToContents);
         m_view->header()->setSectionResizeMode(SftpModel::ModeColumn, QHeaderView::ResizeToContents);
+        // 权限列在窄面板里最占地方、信息又能从悬停提示看到，默认收起来把宽度让给文件名
+        m_view->setColumnHidden(SftpModel::ModeColumn, true);
         if (QItemSelectionModel *selection = m_view->selectionModel()) {
             m_attached.append(connect(selection, &QItemSelectionModel::currentChanged, this,
                                       [this](const QModelIndex &, const QModelIndex &) {
