@@ -81,6 +81,8 @@ git config core.hooksPath .githooks
 
 - 一次提交一个逻辑变更，信息写清“为什么改 + 怎么验证”，不要混入无关格式化。
 - 提交前自查：`git status` / `git diff --stat`，确认没有临时脚本、截图、测试数据、凭据。
-- 发布：`packaging/make-release.sh` 生成 `dist/` 下的 tar.gz / deb / AppImage + `SHA256SUMS`；
-  `packaging/publish-release.sh <tag>` 用 `gh release create` 上传（需要先 `gh auth login`）。
+- 发布：打 `v*` 标签推上去，`.github/workflows/release.yml` 会自动跑 ctest、执行
+  `packaging/make-release.sh` 生成便携包 + deb + 校验和，并发布 Release；
+  发布后脚本会删掉除最新一个以外的旧 Release（连同 tag），想多留几个就改 `keep=1`。
+  需要在本机手动发时用 `packaging/publish-release.sh <tag>`（要先 `gh auth login`）。
 - 两个远端：`origin`（gitee，主力）、`github`（开源镜像）。推送两个都推。
