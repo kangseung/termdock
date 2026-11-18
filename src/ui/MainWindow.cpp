@@ -407,23 +407,31 @@ void MainWindow::openSession(const Session &session)
 
     page->sftp = new SftpWorker(params, this);
     page->model = new SftpModel(this);
-    connect(page->model, &SftpModel::listRequested, this, [page](const QString &path) {
-        if (page->sftp) {
-            const quint64 id = page->sftp->enqueue(SftpWorker::Op::List, path);
-            page->listRequests.insert(id, path);
-        }
-    });
+    connect(page->model, &SftpModel::listRequested, this,
+            [page](const QString &path, bool prefetch) {
+                if (page->sftp) {
+                    const quint64 id = page->sftp->enqueue(SftpWorker::Op::List, path);
+                    page->listRequests.insert(id, path);
+                    if (prefetch)
+                        page->quietListRequests.insert(id);
+                }
+            });
     connect(page->sftp, &SftpWorker::listed, this,
             [this, page](quint64 id, const QString &path, const SftpEntryList &entries) {
                 page->listRequests.remove(id);
+                const bool quiet = page->quietListRequests.remove(id);
                 page->model->applyListing(path, entries);
-                if (page == currentPage())
+                if (!quiet && page == currentPage())
                     m_filePanel->setStatus(QStringLiteral("%1：共 %2 项").arg(path).arg(entries.size()));
             });
     connect(page->sftp, &SftpWorker::failedOp, this, [this, page](quint64 id, const QString &message) {
         const QString path = page->listRequests.take(id);
+        const bool quiet = page->quietListRequests.remove(id);
         if (!path.isEmpty())
             page->model->markLoadingFailed(path);
+        // 探路请求失败（比如没权限的子目录）不该弹到用户面前
+        if (quiet)
+            return;
         if (page == currentPage())
             m_filePanel->setStatus(message);
         statusBar()->showMessage(message, 6000);

@@ -2,6 +2,7 @@
 
 #include <QAbstractItemModel>
 #include <QHash>
+#include <QSet>
 #include <QString>
 #include <QVector>
 
@@ -49,7 +50,8 @@ public:
     Qt::ItemFlags flags(const QModelIndex &index) const override;
 
 signals:
-    void listRequested(const QString &path);
+    // prefetch = true 是模型自己发的“探路”请求，界面不该为它改状态栏
+    void listRequested(const QString &path, bool prefetch);
 
 private:
     struct Node {
@@ -64,11 +66,13 @@ private:
     QModelIndex indexForNode(const Node *node) const;
     void clearChildren(Node *node);
     void deleteNode(Node *node);
-    void requestListing(Node *node);
+    // prefetch = true 时为“探路”请求：结果照样存进节点，但不再继续往下探
+    void requestListing(Node *node, bool prefetch = false);
     void collectPath(Node *node, const QString &path, QVector<Node *> *out) const;
 
     Node *m_root = nullptr;
     QHash<QString, QVector<Node *>> m_pending;
+    QSet<QString> m_prefetchPaths;
 };
 
 } // namespace termdock

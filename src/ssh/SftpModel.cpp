@@ -61,6 +61,7 @@ void SftpModel::setHomePath(const QString &path)
     beginResetModel();
     deleteNode(m_root);
     m_pending.clear();
+    m_prefetchPaths.clear();
     m_root = new Node();
     m_root->entry.path = path;
     m_root->entry.name = QFileInfo(path).fileName();
@@ -80,17 +81,20 @@ void SftpModel::clearChildren(Node *node)
     node->children.clear();
 }
 
-void SftpModel::requestListing(Node *node)
+void SftpModel::requestListing(Node *node, bool prefetch)
 {
     if (!node || node->loading || node->fetched)
         return;
     node->loading = true;
     m_pending[node->entry.path].append(node);
-    emit listRequested(node->entry.path);
+    if (prefetch)
+        m_prefetchPaths.insert(node->entry.path);
+    emit listRequested(node->entry.path, prefetch);
 }
 
 void SftpModel::markLoadingFailed(const QString &path)
 {
+    m_prefetchPaths.remove(path);
     const QVector<Node *> nodes = m_pending.take(path);
     for (Node *node : nodes)
         node->loading = false;
@@ -98,6 +102,7 @@ void SftpModel::markLoadingFailed(const QString &path)
 
 void SftpModel::applyListing(const QString &path, const SftpEntryList &entries)
 {
+    const bool probeOnly = m_prefetchPaths.remove(path);
     const QVector<Node *> nodes = m_pending.take(path);
     for (Node *node : nodes) {
         node->loading = false;
@@ -117,6 +122,22 @@ void SftpModel::applyListing(const QString &path, const SftpEntryList &entries)
         if (parentIndex.isValid())
             emit dataChanged(parentIndex, parentIndex);
     }
+    if (probeOnly)
+        return;
+    // 列完之后顺带问一层子目录：这样在用户展开之前就知道哪些目录是空的，
+    // 空目录不会白画一个展开箭头（hasChildren 只认已加载/未加载，不认“空”）。
+    // 只探一层且限量，避免大目录把请求队列塞满。
+    int budget = 64;
+    for (Node *node : nodes) {
+        for (Node *child : node->children) {
+            if (budget <= 0)
+                return;
+            if (!child->entry.isDir || child->fetched)
+                continue;
+            --budget;
+            requestListing(child, true);
+        }
+    }
 }
 
 void SftpModel::refresh(const QModelIndex &index)
@@ -132,6 +153,7 @@ void SftpModel::refresh(const QModelIndex &index)
     node->fetched = false;
     node->loading = false;
     m_pending.remove(node->entry.path);
+    m_prefetchPaths.remove(node->entry.path);
     if (index.isValid())
         requestListing(node);
     else

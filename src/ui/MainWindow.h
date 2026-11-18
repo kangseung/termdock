@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QHash>
+#include <QSet>
 #include <QMainWindow>
 #include <QVector>
 
@@ -52,6 +53,7 @@ private:
         bool shellConnected = false;
         bool sftpReady = false;
         QHash<quint64, QString> listRequests;
+        QSet<quint64> quietListRequests; // 模型探路用的列表请求，不打扰状态栏
     };
 
     void setupUi();
