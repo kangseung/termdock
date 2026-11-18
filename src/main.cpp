@@ -305,6 +305,24 @@ int runSelfTest()
         test.check(!QIcon(QStringLiteral(":/icons/termdock-256.png")).isNull(),
                    QStringLiteral("内置应用图标可加载"));
 
+        // 反复 resize 压力测试：曾因为裁剪用固定次数 pop_back 而踩空段错误
+        {
+            VtScreen stress(80, 24, 2000);
+            VtParser parser(&stress);
+            bool sizesOk = true;
+            for (int i = 0; i < 400; ++i) {
+                parser.feed(QString("line %1  中文 mixed 0123456789\r\n").arg(i).toUtf8());
+                const int c = 10 + (i * 37) % 220;
+                const int r = 1 + (i * 13) % 70;
+                stress.resize(c, r);
+                if (stress.rows() != r || stress.cols() != c) {
+                    sizesOk = false;
+                    break;
+                }
+            }
+            test.check(sizesOk, QStringLiteral("极端尺寸反复 resize 不崩溃、行列数正确"));
+        }
+
         // 输入法（fcitx5 中文）提交路径：QInputMethodEvent 的 commitString 要原样送到 PTY
         if (QGuiApplication::platformName() != QLatin1String("offscreen")) {
             test.check(true, QStringLiteral("输入法提交（需要窗口平台，已跳过）"));

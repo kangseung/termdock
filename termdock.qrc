@@ -5,6 +5,8 @@
         <file alias="termdock-64.png">assets/icons/termdock-64.png</file>
         <file alias="termdock-256.png">assets/icons/termdock-256.png</file>
         <file alias="check.png">assets/icons/check.png</file>
+        <file alias="folder.png">assets/icons/folder.png</file>
+        <file alias="file.png">assets/icons/file.png</file>
         <file alias="chevron.png">assets/icons/chevron.png</file>
         <file alias="tab-close.png">assets/icons/tab-close-16.png</file>
         <file alias="tab-close-hover.png">assets/icons/tab-close-hover-16.png</file>

@@ -76,7 +76,11 @@ void VtScreen::resize(int cols, int rows)
             buf->lines.resize(size_t(rows));
         } else if (rows < oldRows) {
             // 变小：从底部裁掉。被裁掉的行如果有内容，进滚回，不丢东西。
-            for (int i = 0; i < oldRows - rows; ++i) {
+            // 用 while + 判空而不是固定次数：lines 的行数一旦和 m_rows 不一致
+            // （比如上次 resize 被中途打断），固定次数的 pop_back 就会踩空 → 段错误。
+            while (int(buf->lines.size()) > rows) {
+                if (buf->lines.empty())
+                    break;
                 VtLine tail = std::move(buf->lines.back());
                 buf->lines.pop_back();
                 bool hasContent = false;

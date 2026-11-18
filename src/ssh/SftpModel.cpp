@@ -27,8 +27,10 @@ QString formatSize(qint64 size, bool isDir)
 
 QIcon iconFor(bool isDir)
 {
-    static const QIcon dirIcon = QApplication::style()->standardIcon(QStyle::SP_DirIcon);
-    static const QIcon fileIcon = QApplication::style()->standardIcon(QStyle::SP_FileIcon);
+    // 用自带的彩色图标：Fusion/QSS 皮肤下 style() 给的 SP_DirIcon 是深色的，
+    // 放在深色背景上等于"看不见"（用户反馈文件夹图标黑咕隆咚）
+    static const QIcon dirIcon(QStringLiteral(":/icons/folder.png"));
+    static const QIcon fileIcon(QStringLiteral(":/icons/file.png"));
     return isDir ? dirIcon : fileIcon;
 }
 
