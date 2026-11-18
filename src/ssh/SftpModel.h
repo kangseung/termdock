@@ -44,6 +44,8 @@ public:
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
     bool canFetchMore(const QModelIndex &parent) const override;
     void fetchMore(const QModelIndex &parent) override;
+    // 未展开过的目录也要报“有子项”，否则视图不画展开箭头
+    bool hasChildren(const QModelIndex &parent = QModelIndex()) const override;
     Qt::ItemFlags flags(const QModelIndex &index) const override;
 
 signals:

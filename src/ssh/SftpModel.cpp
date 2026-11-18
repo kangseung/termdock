@@ -269,6 +269,21 @@ void SftpModel::fetchMore(const QModelIndex &parent)
     requestListing(node);
 }
 
+bool SftpModel::hasChildren(const QModelIndex &parent) const
+{
+    if (parent.column() > 0)
+        return false;
+    const Node *node = nodeFromIndex(parent);
+    if (!node)
+        return false;
+    if (!node->children.isEmpty())
+        return true;
+    // 还没展开过、内容未知的目录也算“有子项”：QTreeView 只根据 hasChildren
+    // 决定画不画展开箭头（canFetchMore 不算），不这么写用户看不出哪些目录能展开。
+    // 展开过且确实为空（fetched 且无子项）就不再画箭头。
+    return node->entry.isDir && !node->fetched;
+}
+
 Qt::ItemFlags SftpModel::flags(const QModelIndex &index) const
 {
     if (!index.isValid())
