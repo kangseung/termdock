@@ -52,3 +52,20 @@ jobs:
             dist/termdock_*_amd64.deb
             dist/SHA256SUMS
             dist/MD5SUMS
+
+      # 只保留最新的 1 个 Release（连同它的 tag），旧版本连 tag 一起删掉，
+      # 免得 Releases 页面挂一串没人下载的历史版本
+      - name: 清理旧 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          keep=1
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+            --json tagName,createdAt \
+            --jq "sort_by(.createdAt) | reverse | .[$keep:] | .[].tagName" > old.txt
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+            echo "删除旧版本 $tag"
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          done < old.txt
+          rm -f old.txt
