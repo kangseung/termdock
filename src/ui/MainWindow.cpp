@@ -764,6 +764,8 @@ void MainWindow::closeEvent(QCloseEvent *event)
     settings.setValue(QStringLiteral("ui/splitter"), m_splitter->saveState());
     persistUiState();
     event->accept();
+    // 主窗口是唯一能让程序退出的窗口（见 setQuitOnLastWindowClosed(false)）
+    QApplication::quit();
 }
 
 } // namespace termdock

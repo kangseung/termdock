@@ -697,8 +697,11 @@ int main(int argc, char *argv[])
 #endif
 
     QApplication app(argc, argv);
+    // 关标签页（哪怕关掉最后一个）只是关掉一个连接，绝不退出程序；
+    // 真正退出只走关窗 / 菜单“退出”，见 MainWindow::closeEvent。
+    QApplication::setQuitOnLastWindowClosed(false);
     QApplication::setApplicationName(QStringLiteral("termdock"));
-    QApplication::setApplicationVersion(QStringLiteral("0.1.1"));
+    QApplication::setApplicationVersion(QStringLiteral("0.1.2"));
     QApplication::setOrganizationName(QStringLiteral("termdock"));
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/termdock-256.png")));
 
