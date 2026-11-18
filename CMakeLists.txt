@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(termdock VERSION 0.1.5 LANGUAGES CXX)
+project(termdock VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,6 +9,13 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
+
+# Windows 上 socket API 在 ws2_32 里，不链接就全部 undefined（select/closesocket/getaddrinfo）
+if(WIN32)
+    set(TERMDOCK_PLATFORM_LIBS ws2_32)
+else()
+    set(TERMDOCK_PLATFORM_LIBS "")
+endif()
 
 find_path(LIBSSH2_INCLUDE_DIR libssh2.h)
 find_library(LIBSSH2_LIBRARY NAMES ssh2 libssh2)
@@ -26,6 +33,7 @@ set(TERMDOCK_SOURCES
     src/term/VtScreen.cpp
     src/term/VtParser.cpp
     src/term/TerminalWidget.cpp
+    src/ssh/NetCompat.cpp
     src/ssh/SshConnection.cpp
     src/ssh/ShellSession.cpp
     src/ssh/SftpWorker.cpp
@@ -49,6 +57,7 @@ set(TERMDOCK_HEADERS
     src/term/VtScreen.h
     src/term/VtParser.h
     src/term/TerminalWidget.h
+    src/ssh/NetCompat.h
     src/ssh/SshConnection.h
     src/ssh/ShellSession.h
     src/ssh/SftpWorker.h
@@ -63,7 +72,8 @@ set(TERMDOCK_HEADERS
 
 set(CMAKE_AUTORCC ON)
 
-add_executable(termdock ${TERMDOCK_SOURCES} ${TERMDOCK_HEADERS} termdock.qrc)
+# WIN32 是必需的：否则 Windows 上会额外弹一个控制台黑框
+add_executable(termdock WIN32 ${TERMDOCK_SOURCES} ${TERMDOCK_HEADERS} termdock.qrc)
 
 target_include_directories(termdock PRIVATE src ${LIBSSH2_INCLUDE_DIR})
 target_link_libraries(termdock PRIVATE
@@ -71,6 +81,7 @@ target_link_libraries(termdock PRIVATE
     OpenSSL::Crypto
     ${LIBSSH2_LIBRARY}
     Threads::Threads
+    ${TERMDOCK_PLATFORM_LIBS}
 )
 
 if(MSVC)
@@ -88,11 +99,14 @@ if(UNIX AND NOT APPLE)
 endif()
 
 install(TARGETS termdock RUNTIME DESTINATION bin)
-install(FILES packaging/termdock.desktop DESTINATION share/applications)
-install(FILES assets/icons/termdock-16.png DESTINATION share/icons/hicolor/16x16/apps RENAME termdock.png)
-install(FILES assets/icons/termdock-32.png DESTINATION share/icons/hicolor/32x32/apps RENAME termdock.png)
-install(FILES assets/icons/termdock-64.png DESTINATION share/icons/hicolor/64x64/apps RENAME termdock.png)
-install(FILES assets/icons/termdock-256.png DESTINATION share/icons/hicolor/256x256/apps RENAME termdock.png)
+# .desktop 和 hicolor 图标是 Linux 桌面规范，Windows 上装了也没意义
+if(UNIX AND NOT APPLE)
+    install(FILES packaging/termdock.desktop DESTINATION share/applications)
+    install(FILES assets/icons/termdock-16.png DESTINATION share/icons/hicolor/16x16/apps RENAME termdock.png)
+    install(FILES assets/icons/termdock-32.png DESTINATION share/icons/hicolor/32x32/apps RENAME termdock.png)
+    install(FILES assets/icons/termdock-64.png DESTINATION share/icons/hicolor/64x64/apps RENAME termdock.png)
+    install(FILES assets/icons/termdock-256.png DESTINATION share/icons/hicolor/256x256/apps RENAME termdock.png)
+endif()
 
 # ---------------- 单元测试 ----------------
 enable_testing()
@@ -108,5 +122,10 @@ add_executable(termdock-tests
     src/app/AppConfig.cpp
 )
 target_include_directories(termdock-tests PRIVATE src)
-target_link_libraries(termdock-tests PRIVATE Qt6::Gui Qt6::Core OpenSSL::Crypto)
+target_link_libraries(termdock-tests PRIVATE
+    Qt6::Gui
+    Qt6::Core
+    OpenSSL::Crypto
+    ${TERMDOCK_PLATFORM_LIBS}
+)
 add_test(NAME termdock-tests COMMAND termdock-tests)

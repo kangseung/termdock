@@ -66,7 +66,8 @@ void SftpModel::setHomePath(const QString &path)
     m_emptyDirs.clear();
     m_root = new Node();
     m_root->entry.path = path;
-    m_root->entry.name = QFileInfo(path).fileName();
+    // 远端是 POSIX 路径：用 QFileInfo 取名在 Windows 上会被反斜杠/盘符语义带偏
+    m_root->entry.name = remotepath::baseName(path);
     if (m_root->entry.name.isEmpty())
         m_root->entry.name = path;
     m_root->entry.isDir = true;

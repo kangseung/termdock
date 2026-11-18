@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build-linux:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -39,19 +39,113 @@ jobs:
       - name: 构建并打包
         run: QT_DIR="$QT_ROOT_DIR" ./packaging/make-release.sh
 
+      - name: 上传 Linux 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-dist
+          path: |
+            dist/termdock-*-linux-x86_64.tar.gz
+            dist/termdock-*-linux-x86_64.zip
+            dist/termdock_*_amd64.deb
+            dist/SHA256SUMS
+            dist/MD5SUMS
+            dist/RELEASE_NOTES.md
+
+  # Windows 版走 MSYS2 UCRT64：和本地验证过的工具链一致（gcc + Qt6 + libssh2 + OpenSSL）
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 MSYS2 工具链
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            zip
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-tools
+            mingw-w64-ucrt-x86_64-libssh2
+            mingw-w64-ucrt-x86_64-openssl
+
+      - name: 单元测试
+        run: |
+          cmake -S . -B build-test -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_PREFIX_PATH="$MINGW_PREFIX"
+          cmake --build build-test
+          cd build-test && ./termdock-tests.exe
+
+      - name: 构建并打包
+        run: ./packaging/make-release-windows.sh
+
+      - name: 冒烟测试（自检必须在打包产物里跑通）
+        shell: pwsh
+        run: |
+          Expand-Archive -Path "dist/termdock-*-windows-x64.zip" -DestinationPath smoke -Force
+          $exe = Get-ChildItem -Path smoke -Recurse -Filter termdock.exe | Select-Object -First 1
+          if (-not $exe) { throw "打包产物里没有 termdock.exe" }
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $out = & $exe.FullName --selftest 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) { throw "打包产物自检失败（exit=$LASTEXITCODE）" }
+          if ($out -notmatch "结果：(\d+)/(\d+) 通过，0 失败") { throw "自检有失败项" }
+
+      - name: 上传 Windows 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dist
+          path: |
+            dist/termdock-*-windows-x64.zip
+            dist/SHA256SUMS-windows
+            dist/MD5SUMS-windows
+            dist/RELEASE_NOTES-WINDOWS.md
+
+  # 发布要等两个平台都产出，否则先跑的会把后跑的产物冲掉
+  publish:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 取回各平台产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 合并发布说明
+        run: |
+          {
+            cat dist/RELEASE_NOTES.md
+            echo
+            cat dist/RELEASE_NOTES-WINDOWS.md
+          } > dist/RELEASE_NOTES-ALL.md
+          cat dist/RELEASE_NOTES-ALL.md
+
       - name: 发布 Release
         uses: softprops/action-gh-release@v2
         with:
           name: termdock ${{ github.ref_name }}
-          body_path: dist/RELEASE_NOTES.md
+          body_path: dist/RELEASE_NOTES-ALL.md
           draft: false
           prerelease: false
           files: |
             dist/termdock-*-linux-x86_64.tar.gz
             dist/termdock-*-linux-x86_64.zip
             dist/termdock_*_amd64.deb
+            dist/termdock-*-windows-x64.zip
             dist/SHA256SUMS
             dist/MD5SUMS
+            dist/SHA256SUMS-windows
+            dist/MD5SUMS-windows
 
       # 只保留最新的 1 个 Release（连同它的 tag），旧版本连 tag 一起删掉，
       # 免得 Releases 页面挂一串没人下载的历史版本

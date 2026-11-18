@@ -7,6 +7,7 @@
 #include "../src/session/Recovery.h"
 #include "../src/session/Session.h"
 #include "../src/session/SessionStore.h"
+#include "../src/ssh/SftpTypes.h"
 #include "../src/term/VtParser.h"
 #include "../src/term/VtScreen.h"
 
@@ -368,7 +369,50 @@ void testPassphraseMinimum()
           "8 位口令可以设置", error);
 }
 
+// ---------------- 远端 POSIX 路径 ----------------
+// 这些用例在 Windows 上才有意义：用 QFileInfo/QDir::cleanPath 解析远端路径会被
+// 反斜杠和盘符规则带偏，导致刷新错目录、上传到错位置。
+
+void testRemotePathSemantics()
+{
+    check(remotepath::parent(QStringLiteral("/home/alice/a.txt"))
+              == QStringLiteral("/home/alice"),
+          "parent 取上一级", remotepath::parent(QStringLiteral("/home/alice/a.txt")));
+    check(remotepath::parent(QStringLiteral("/home")) == QStringLiteral("/"),
+          "parent 到根仍是 /", remotepath::parent(QStringLiteral("/home")));
+    check(remotepath::parent(QStringLiteral("/")) == QStringLiteral("/"), "parent(/) 是 /");
+    check(remotepath::baseName(QStringLiteral("/home/alice")) == QStringLiteral("alice"),
+          "baseName 取末段");
+    check(remotepath::join(QStringLiteral("/home"), QStringLiteral("x.txt"))
+              == QStringLiteral("/home/x.txt"),
+          "join 拼接不重复斜杠");
+    check(remotepath::join(QStringLiteral("/home/"), QStringLiteral("x.txt"))
+              == QStringLiteral("/home/x.txt"),
+          "join 处理已带尾斜杠的目录");
+
+    // 反斜杠是 Linux 文件名的一部分，绝不能被当成分隔符
+    check(remotepath::parent(QStringLiteral("/home/u/a\\b.txt"))
+              == QStringLiteral("/home/u"),
+          "反斜杠不当作目录分隔符", remotepath::parent(QStringLiteral("/home/u/a\\b.txt")));
+    check(remotepath::normalize(QStringLiteral("/home/u/a\\b.txt"))
+              == QStringLiteral("/home/u/a\\b.txt"),
+          "normalize 保留文件名里的反斜杠",
+          remotepath::normalize(QStringLiteral("/home/u/a\\b.txt")));
+    // 冒号在 Linux 文件名里合法，不能被当盘符剥掉
+    check(remotepath::baseName(QStringLiteral("/home/u/a:b.txt")) == QStringLiteral("a:b.txt"),
+          "冒号不被当盘符");
+
+    check(remotepath::normalize(QStringLiteral("/home//alice/./x/../y"))
+              == QStringLiteral("/home/alice/y"),
+          "normalize 折叠 . / .. 和重复斜杠",
+          remotepath::normalize(QStringLiteral("/home//alice/./x/../y")));
+}
+
 // ---------------- 数据目录规则 ----------------
+
+// main() 里设的沙箱目录：testDataDirRules 临时改覆盖后必须恢复成它，
+// 否则后续 testCryptoMissingKeyNotRecreated 会去删真实数据目录里的 key
+QString g_sandboxDir;
 
 void testDataDirRules()
 {
@@ -376,7 +420,17 @@ void testDataDirRules()
     AppConfig::setDataDirOverride(QStringLiteral("/tmp/termdock-must-not-use"));
     check(AppConfig::dataDir() == QStringLiteral("/tmp/termdock-must-not-use"),
           "命令行覆盖到临时目录仍生效（仅告警）", AppConfig::dataDir());
-    AppConfig::setDataDirOverride(QString());
+    AppConfig::setDataDirOverride(g_sandboxDir);
+
+    // 关键回归：所有数据文件都必须落在沙箱里。这些路径会被删/写，
+    // 一旦回落到真实数据目录就会毁掉用户的 key 和指纹库。
+    const QString sandbox = QDir::cleanPath(g_sandboxDir);
+    check(QDir::cleanPath(AppConfig::keyFile()).startsWith(sandbox + QLatin1Char('/')),
+          "密钥文件在沙箱内", AppConfig::keyFile());
+    check(QDir::cleanPath(AppConfig::sessionsFile()).startsWith(sandbox + QLatin1Char('/')),
+          "会话文件在沙箱内", AppConfig::sessionsFile());
+    check(QDir::cleanPath(AppConfig::knownHostsFile()).startsWith(sandbox + QLatin1Char('/')),
+          "指纹库在沙箱内", AppConfig::knownHostsFile());
 }
 
 } // namespace
@@ -390,10 +444,15 @@ int main(int argc, char **argv)
         return 2;
     }
     qputenv("XDG_CONFIG_HOME", sandbox.path().toUtf8());
-    qunsetenv("TERMDOCK_DATA_DIR");
 
     QCoreApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("termdock-tests"));
+
+    // 真正兜住的数据目录是进程内覆盖：XDG_CONFIG_HOME 在 Windows 上无效，
+    // 靠它做沙箱会让测试删掉用户真实的 key / 指纹库。
+    g_sandboxDir = sandbox.path();
+    qunsetenv("TERMDOCK_DATA_DIR");
+    AppConfig::setDataDirOverride(g_sandboxDir);
 
     std::printf("== VT 内核\n");
     testVtBasics();
@@ -430,6 +489,9 @@ int main(int argc, char **argv)
 
     std::printf("== 口令策略\n");
     testPassphraseMinimum();
+
+    std::printf("== 远端 POSIX 路径\n");
+    testRemotePathSemantics();
 
     std::printf("== 数据目录规则\n");
     testDataDirRules();

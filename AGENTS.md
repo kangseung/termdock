@@ -14,12 +14,12 @@ Qt 6 Widgets + libssh2 的 SSH 终端 + 会话簿 + SFTP 文件树。
 src/app      AppConfig（数据目录/配置文件）、Theme（QSS + 调色板）
 src/session  Session/SessionStore（会话簿 JSON）、Crypto（AES-256-GCM）、Recovery（安全密钥）
 src/term     VtScreen/VtParser（VT 解析）、TerminalWidget（QPainter 自绘）
-src/ssh      SshConnection（socket+libssh2）、ShellSession（PTY 线程）、
-             SftpWorker（SFTP 操作线程）、SftpModel（懒加载树模型）
+src/ssh      NetCompat（跨平台 socket：Winsock/POSIX）、SshConnection（连接+握手+认证）、
+             ShellSession（PTY 线程）、SftpWorker（SFTP 操作线程）、SftpModel（懒加载树模型）
 src/ui       MainWindow（标签页/布局）、SessionPanel（会话列表）、SessionDialog、
              FileTreePanel（SFTP 文件树 UI）、VaultDialog、DataDirDialog
-tests/       unit_tests.cpp（ctest，59+ 断言）
-packaging/   桌面文件、发布打包脚本
+tests/       unit_tests.cpp（ctest，81 条断言）
+packaging/   Linux 桌面文件 + make-release.sh、Windows 用的 ico + make-release-windows.sh
 ```
 
 ## 3. 构建 / 运行 / 测试 / 安装
@@ -50,6 +50,45 @@ TERMDOCK_PASSWORD=*** ./build/termdock --connect <host> --user <user> \
 
 调试界面：`Xvfb :99 & DISPLAY=:99 QT_QPA_PLATFORM=xcb ./build/termdock ...`，
 配 `xdotool` + `ffmpeg -f x11grab` 截图；注意本机默认是 Wayland，**必须强制 `xcb`** 才能截到图。
+
+### Windows 构建（已完整支持，2026-11 实机验证）
+
+MSYS2 UCRT64 工具链，和 Linux 共用同一套 CMake 工程，源码里没有平台分支
+（除 `NetCompat.cpp` 内部与少量字体/快捷键的条件编译）。
+已在 Windows 10 x64 上实测：全量编译、81 条单元测试、65 条自检、
+对真机跑通 SSH 认证/PTY/SFTP 上传下载删除递归、GUI 连接与持续会话均正常。
+
+```cmd
+:: 依赖一次装好（官方源在国内常返回 403，需改 /etc/pacman.d/mirrorlist.*）
+winget install --id MSYS2.MSYS2 -e --source winget
+pacman -S --needed mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-cmake ^
+    mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-qt6-base ^
+    mingw-w64-ucrt-x86_64-qt6-tools mingw-w64-ucrt-x86_64-libssh2 ^
+    mingw-w64-ucrt-x86_64-openssl zip
+
+set PATH=C:\msys64\ucrt64\bin;C:\msys64\usr\bin;%PATH%
+cmake -S . -B build-win -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=C:/msys64/ucrt64
+cmake --build build-win
+build-win\termdock-tests.exe
+build-win\termdock.exe --selftest
+```
+
+打 Windows 便携包（自带 Qt/OpenSSL/libssh2/MinGW 运行库）：在 MSYS2 bash 里跑
+`./packaging/make-release-windows.sh`，产物在 `dist/*-windows-x64.zip`。
+
+移植时踩过的坑，改代码时别再踩回去：
+
+1. **socket 必须在 `NetCompat` 里**。Windows 用 `select` 而**不用 `WSAPoll`**——
+   WSAPoll 在 Windows 上漏报连接失败，会让"连不上的主机"一直等到超时。
+   `WSAStartup` 由 `net::ensureInit()` 的静态守卫负责，全仓库没有别处初始化 Winsock。
+2. **`<windows.h>` 不能排在 `libssh2.h` 之前**（`main.cpp` 里就是这么处理的）：
+   `libssh2.h` 在 `_WIN32` 下会先带进 `winsock2.h`，顺序反了会撞 winsock 1/2 冲突。
+3. **远端路径一律走 `remotepath::`（`SftpTypes.h`）**，绝不能用 `QFileInfo`/`QDir::cleanPath`：
+   Windows 上它们把文件名里的 `\` 当分隔符、把 `a:b` 当盘符，于是刷新错目录、上传到错位置。
+4. **`add_executable(... WIN32 ...)` 让 GUI 没有控制台**，所以 `main.cpp` 里
+   `attachParentConsoleIfNeeded()` 负责在 CLI 模式下附着父控制台；但它**必须**
+   在 stdout 已被重定向时原样保留，否则 `> log` 和 CI 一个字节都收不到。
+5. `QKeySequence::Quit` 在 Windows 上是空序列，菜单里显示不出退出快捷键，已显式回退到 `Alt+F4`。
 
 ## 4. 代码约定
 

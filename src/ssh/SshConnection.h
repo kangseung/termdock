@@ -2,7 +2,7 @@
 
 #include <QString>
 
-#include <libssh2.h>
+#include "ssh/NetCompat.h"
 
 namespace termdock {
 
@@ -29,7 +29,7 @@ public:
     void close();
 
     LIBSSH2_SESSION *session() const { return m_session; }
-    int socket() const { return m_sock; }
+    net::Socket socket() const { return m_sock; }
     QString fingerprint() const { return m_fingerprint; }
     QString hostKeyType() const { return m_hostKeyType; }
 
@@ -41,7 +41,7 @@ private:
     bool authenticate(const SshParams &params, int timeoutMs, QString *error);
     bool waitSocket(int timeoutMs, bool forWrite);
 
-    int m_sock = -1;
+    net::Socket m_sock = net::kInvalidSocket;
     LIBSSH2_SESSION *m_session = nullptr;
     QString m_fingerprint;
     QString m_hostKeyType;

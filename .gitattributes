@@ -1,0 +1,20 @@
+# shell 脚本和控制文件在 Linux 上执行，必须保持 LF：
+# 仓库在 Windows 上克隆时 core.autocrlf=true 会把它们转成 CRLF，
+# 到 CI 里就是 "/usr/bin/env bash^M: no such file or directory"。
+*.sh            text eol=lf
+*.yml           text eol=lf
+*.desktop       text eol=lf
+install.sh      text eol=lf
+.githooks/*     text eol=lf
+
+# Windows 侧保持原生换行
+*.cmd           text eol=crlf
+*.ps1           text eol=crlf
+*.bat           text eol=crlf
+
+# 二进制资源不能被转换
+*.png           binary
+*.ico           binary
+*.gz            binary
+*.zip           binary
+*.deb           binary

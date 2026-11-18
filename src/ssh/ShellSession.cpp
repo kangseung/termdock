@@ -1,22 +1,17 @@
 #include "ssh/ShellSession.h"
 
+#include "ssh/NetCompat.h"
+
 #include <QMutexLocker>
-#include <poll.h>
-#include <sys/socket.h>
 
 namespace termdock {
 
 namespace {
 
-bool waitSocketFor(int fd, int timeoutMs, bool forWrite)
+// 统一走兼容层：Windows 上 select、POSIX 上 poll，语义一致。
+bool waitSocketFor(net::Socket sock, int timeoutMs, bool forWrite)
 {
-    pollfd pfd{};
-    pfd.fd = fd;
-    pfd.events = forWrite ? POLLOUT : POLLIN;
-    const int rc = ::poll(&pfd, 1, timeoutMs);
-    if (rc <= 0)
-        return false;
-    return (pfd.revents & (forWrite ? POLLOUT : POLLIN)) != 0 || (pfd.revents & POLLHUP) != 0;
+    return net::waitSocket(sock, timeoutMs, forWrite);
 }
 
 } // namespace
@@ -72,7 +67,7 @@ void ShellSession::run()
 
     LIBSSH2_SESSION *session = conn.session();
     libssh2_session_set_blocking(session, 0);
-    const int sock = conn.socket();
+    const net::Socket sock = conn.socket();
 
     // 打开会话通道
     LIBSSH2_CHANNEL *channel = nullptr;

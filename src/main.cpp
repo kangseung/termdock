@@ -30,6 +30,12 @@
 
 using namespace termdock;
 
+#ifdef _WIN32
+// 必须排在 libssh2.h 之后（ssh/* 头会经 NetCompat.h 引入 winsock2.h）：
+// <windows.h> 若先进来会把 winsock.h 带进来，和 winsock2 撞车。
+#    include <windows.h>
+#endif
+
 namespace {
 
 // 首次换到新目录时，如果旧位置 ~/.config/termdock 里有数据，问一句要不要导入
@@ -331,12 +337,21 @@ int runSelfTest()
                        QStringLiteral("恢复数据迭代次数越界被拒绝"));
         }
         {
-            // 3) TERMDOCK_DATA_DIR 指向临时目录时要被忽略
-            qputenv("TERMDOCK_DATA_DIR", "/tmp/termdock-should-ignore");
+            // 3) 自检必须真的跑在沙箱里：一旦跑偏就会删掉用户真实的密钥
+            const QString sandboxDir = AppConfig::dataDir();
+            test.check(QDir::cleanPath(sandboxDir)
+                           == QDir::cleanPath(QDir::tempPath()
+                                              + QStringLiteral("/termdock-selftest-config")),
+                       QStringLiteral("自检数据目录被限制在沙箱内"), sandboxDir);
+
+            // 4) TERMDOCK_DATA_DIR 指向临时目录时要被忽略（临时清掉覆盖，单独验这条规则）
+            const QString tempDir = QDir::tempPath() + QStringLiteral("/termdock-should-ignore");
+            AppConfig::setDataDirOverride(QString());
+            qputenv("TERMDOCK_DATA_DIR", tempDir.toUtf8());
             const QString ignored = AppConfig::dataDir();
             qunsetenv("TERMDOCK_DATA_DIR");
-            // 自检本身跑在 /tmp 沙箱里，所以只断言"没有采用那个环境变量"
-            test.check(ignored != QStringLiteral("/tmp/termdock-should-ignore"),
+            AppConfig::setDataDirOverride(sandboxDir);
+            test.check(ignored != QDir::cleanPath(tempDir),
                        QStringLiteral("环境变量指向临时目录时被忽略"), ignored);
         }
 
@@ -661,15 +676,43 @@ int runConnectTest(const QString &host, int port, const QString &user, const QSt
 
 } // namespace
 
+// Windows 的 GUI 子系统进程没有控制台，--selftest / --connect-test 的输出会全部丢掉。
+// 从终端启动时父进程通常有控制台，AttachConsole 之后 stdout 就活了；
+// 双击启动时没有父控制台，这里静默失败即可（正常 GUI 用法不需要控制台）。
+void attachParentConsoleIfNeeded()
+{
+#ifdef _WIN32
+    // stdout 已经被重定向到管道/文件时（CI、`> log`、本脚本）必须原样保留，
+    // 否则 freopen 到 CONOUT$ 会把输出从管道上偷走，调用方一个字节都收不到。
+    const HANDLE existing = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (existing != nullptr && existing != INVALID_HANDLE_VALUE)
+        return;
+    if (!AttachConsole(ATTACH_PARENT_PROCESS))
+        return;
+    FILE *stream = nullptr;
+    freopen_s(&stream, "CONOUT$", "w", stdout);
+    freopen_s(&stream, "CONOUT$", "w", stderr);
+#endif
+}
+
 int main(int argc, char *argv[])
 {
-    // --selftest 会做加解密往返，必须在沙箱配置目录里跑，
-    // 否则会创建/覆盖用户真实的 key 与 sessions.json。
+    bool wantsConsole = false;
+    for (int i = 1; i < argc; ++i) {
+        if (qstrcmp(argv[i], "--selftest") == 0 || qstrcmp(argv[i], "--connect-test") == 0
+            || qstrcmp(argv[i], "--help") == 0 || qstrcmp(argv[i], "-h") == 0
+            || qstrcmp(argv[i], "--version") == 0)
+            wantsConsole = true;
+    }
+    if (wantsConsole)
+        attachParentConsoleIfNeeded();
+
     for (int i = 1; i < argc; ++i) {
         if (qstrcmp(argv[i], "--selftest") == 0) {
             const QString sandbox = QDir::tempPath() + QStringLiteral("/termdock-selftest-config");
             QDir(sandbox).removeRecursively();
             qputenv("XDG_CONFIG_HOME", sandbox.toUtf8());
+            AppConfig::setDataDirOverride(sandbox);
             break;
         }
     }

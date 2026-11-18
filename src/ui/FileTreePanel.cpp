@@ -270,7 +270,7 @@ QString FileTreePanel::currentDirectory() const
     const QString path = m_model->pathForIndex(current);
     if (m_model->isDirIndex(current))
         return path;
-    return QFileInfo(path).path();
+    return remotepath::parent(path);
 }
 
 void FileTreePanel::updatePathLabel()
@@ -346,7 +346,9 @@ void FileTreePanel::navigateTo(const QString &target)
     } else {
         resolved = root + QLatin1Char('/') + input;
     }
-    resolved = QDir::cleanPath(resolved);
+    // 远端是 POSIX 路径：QDir::cleanPath 在 Windows 上会把 '\' 当分隔符，
+    // 把 Linux 合法文件名 a\b.txt 拆成目录 a 和文件 b.txt
+    resolved = remotepath::normalize(resolved);
     if (resolved.isEmpty()) {
         updatePathLabel();
         return;
@@ -374,7 +376,7 @@ void FileTreePanel::goUpOneLevel()
     const QString root = m_model->homePath();
     if (root.isEmpty() || root == QLatin1String("/"))
         return;
-    const QString parent = QFileInfo(root).path();
+    const QString parent = remotepath::parent(root);
     if (parent.isEmpty() || parent == root)
         return;
     navigateTo(parent);
@@ -386,7 +388,7 @@ quint64 FileTreePanel::enqueueStructural(SftpWorker::Op op, const QString &path,
     // 结构变化发生在远端目标所在的目录里，操作完成后刷那个目录。
     // 上传时 path 是本地文件、path2 才是远端目标。
     const QString &remotePath = (op == SftpWorker::Op::Upload) ? path2 : path;
-    m_refreshDirs.insert(id, QFileInfo(remotePath).path());
+    m_refreshDirs.insert(id, remotepath::parent(remotePath));
     return id;
 }
 
@@ -425,7 +427,7 @@ QString FileTreePanel::dropTargetDir(const QPoint &pos) const
     const QString path = m_model->pathForIndex(index);
     if (m_model->isDirIndex(index))
         return path; // 落在文件夹上就传进这个文件夹
-    return QFileInfo(path).path();
+    return remotepath::parent(path);
 }
 
 void FileTreePanel::uploadLocalPath(const QString &local, const QString &remoteDir)
@@ -612,7 +614,7 @@ void FileTreePanel::renameSelection()
                                                   m_model->nameForIndex(current), &ok);
     if (!ok || newName.trimmed().isEmpty())
         return;
-    const QString target = QFileInfo(path).path() + QLatin1Char('/') + newName.trimmed();
+    const QString target = remotepath::join(remotepath::parent(path), newName.trimmed());
     enqueueStructural(SftpWorker::Op::Rename, path, target);
     setStatus(QStringLiteral("正在重命名…"));
 }

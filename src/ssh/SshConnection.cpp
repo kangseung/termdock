@@ -1,15 +1,8 @@
 #include "ssh/SshConnection.h"
 
-#include <QByteArray>
+#include "ssh/NetCompat.h"
 
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include <QByteArray>
 
 #include <mutex>
 
@@ -58,9 +51,9 @@ void SshConnection::close()
         libssh2_session_free(m_session);
         m_session = nullptr;
     }
-    if (m_sock >= 0) {
-        ::close(m_sock);
-        m_sock = -1;
+    if (m_sock != net::kInvalidSocket) {
+        net::closeSocket(m_sock);
+        m_sock = net::kInvalidSocket;
     }
 }
 
@@ -77,69 +70,12 @@ QString SshConnection::lastError(LIBSSH2_SESSION *session)
 
 bool SshConnection::waitSocket(int timeoutMs, bool forWrite)
 {
-    pollfd pfd{};
-    pfd.fd = m_sock;
-    pfd.events = forWrite ? POLLOUT : POLLIN;
-    const int rc = ::poll(&pfd, 1, timeoutMs);
-    if (rc <= 0)
-        return false;
-    return (pfd.revents & (forWrite ? POLLOUT : POLLIN)) != 0 || (pfd.revents & POLLHUP) != 0;
+    return net::waitSocket(m_sock, timeoutMs, forWrite);
 }
 
 bool SshConnection::connectSocket(const QString &host, int port, int timeoutMs, QString *error)
 {
-    addrinfo hints{};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    addrinfo *result = nullptr;
-    const QByteArray hostName = host.toUtf8();
-    const QByteArray portStr = QByteArray::number(port);
-    if (getaddrinfo(hostName.constData(), portStr.constData(), &hints, &result) != 0 || !result) {
-        if (error)
-            *error = QStringLiteral("无法解析主机 %1").arg(host);
-        return false;
-    }
-
-    QString lastMessage = QStringLiteral("连接失败");
-    for (addrinfo *it = result; it; it = it->ai_next) {
-        const int fd = ::socket(it->ai_family, it->ai_socktype, it->ai_protocol);
-        if (fd < 0)
-            continue;
-        const int flags = fcntl(fd, F_GETFL, 0);
-        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-        int rc = ::connect(fd, it->ai_addr, it->ai_addrlen);
-        if (rc != 0 && errno == EINPROGRESS) {
-            pollfd pfd{};
-            pfd.fd = fd;
-            pfd.events = POLLOUT;
-            rc = ::poll(&pfd, 1, timeoutMs);
-            if (rc > 0) {
-                int soError = 0;
-                socklen_t len = sizeof(soError);
-                getsockopt(fd, SOL_SOCKET, SO_ERROR, &soError, &len);
-                rc = soError == 0 ? 0 : -1;
-                if (soError != 0)
-                    lastMessage = QStringLiteral("连接被拒绝：%1").arg(QString::fromLocal8Bit(strerror(soError)));
-            } else {
-                rc = -1;
-                lastMessage = QStringLiteral("连接超时（%1 秒）").arg(timeoutMs / 1000);
-            }
-        }
-        if (rc == 0) {
-            fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
-            const int one = 1;
-            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-            setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
-            m_sock = fd;
-            freeaddrinfo(result);
-            return true;
-        }
-        ::close(fd);
-    }
-    freeaddrinfo(result);
-    if (error)
-        *error = lastMessage;
-    return false;
+    return net::connectWithTimeout(host, port, timeoutMs, &m_sock, error);
 }
 
 bool SshConnection::handshake(int timeoutMs, QString *error)

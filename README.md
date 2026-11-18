@@ -168,6 +168,34 @@ Wayland 原生需要 `qtwayland` 模块；中文输入需要系统的 `fcitx5-fr
 sudo cmake --install build --prefix /usr/local
 ```
 
+### Windows 构建
+
+用 MSYS2 的 UCRT64 环境（和 Linux 走同一套 CMake 工程，源码没有平台分支）：
+
+```bash
+# 依赖
+pacman -S --needed mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-cmake \
+    mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-qt6-base \
+    mingw-w64-ucrt-x86_64-qt6-tools mingw-w64-ucrt-x86_64-libssh2 \
+    mingw-w64-ucrt-x86_64-openssl zip
+
+# 构建
+cmake -S . -B build-win -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_PREFIX_PATH=C:/msys64/ucrt64
+cmake --build build-win
+
+# 测试
+build-win/termdock-tests.exe
+build-win/termdock.exe --selftest
+
+# 打便携包（自带 Qt / OpenSSL / libssh2 / MinGW 运行库）
+./packaging/make-release-windows.sh
+```
+
+Windows 版的网络层走 Winsock（`src/ssh/NetCompat.*`），远端 PTY 由 SSH 请求，
+所以**不需要**本地 ConPTY；SFTP 路径一律按 POSIX 语义处理，不会把 Linux 文件名里的
+`\`、`:` 当成本地路径分隔符或盘符。
+
 ---
 
 ## 命令行（自测用）
@@ -213,9 +241,10 @@ src/ui/             MainWindow、SessionPanel、SessionDialog、FileTreePanel、
 ## 测试
 
 ```bash
-ctest --test-dir build --output-on-failure   # 68 条单元测试（VT 内核 / 解析器 / 加密 / 会话 / 恢复 / 数据目录）
-./build/termdock --selftest                  # 64 条端到端自检（含网络无关的 PTY、输入法、关闭流程）
+ctest --test-dir build --output-on-failure   # 81 条单元测试（VT 内核 / 解析器 / 加密 / 会话 / 恢复 / 远端路径 / 数据目录）
+./build/termdock --selftest                  # 65 条端到端自检（含网络无关的 PTY、输入法、关闭流程）
 ./build/termdock --connect-test <host> --user <user>   # 真机 SSH/SFTP 联通测试（需 TERMDOCK_PASSWORD）
+                                             # Windows 上也跑同一套：termdock-tests.exe / termdock.exe --selftest
 ```
 
 ## 已知限制
@@ -226,7 +255,7 @@ ctest --test-dir build --output-on-failure   # 68 条单元测试（VT 内核 / 
 - 连接会在布局完成后才建立 PTY，保证远端按真实列宽生成 MOTD / 欢迎信息，不会一登录就缺右半截
 - 组合附加符号（如 é 的分音符）不叠加渲染；文件名里的复杂 emoji 宽度可能偏一格
 - 鼠标上报不含 1005（UTF-8 坐标）/ 1015（urxvt）两种旧编码
-- Windows 的本地 shell（ConPTY）未适配；SSH 部分依赖 libssh2，理论上可用
+- Windows 本地 shell（ConPTY）未适配；远程 SSH 会话和 SFTP 已完整可用（在 Windows 10 x64 上实测）
 - **没有自动更新，没有崩溃上报，没有测试矩阵**；它就是个玩具
 
 ---

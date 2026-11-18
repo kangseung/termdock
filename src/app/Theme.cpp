@@ -57,19 +57,30 @@ QFont Theme::terminalFont() const
 {
     QFont font;
     if (m_fontFamily.isEmpty()) {
-        // 拉丁字符用等宽字体，汉字交给 CJK 字体兜底（汉字天然占两格）
+        // 拉丁字符用等宽字体，汉字交给 CJK 字体兜底（汉字天然占两格）。
+        // 顺序按平台分布排：Windows 只有 Cascadia/Consolas/雅黑，Linux 才有前面那批。
         font.setFamilies(QStringList{QStringLiteral("JetBrainsMono NFM"),
                                      QStringLiteral("JetBrains Mono"),
+                                     QStringLiteral("Cascadia Mono"),
+                                     QStringLiteral("Consolas"),
                                      QStringLiteral("DejaVu Sans Mono"),
                                      QStringLiteral("Noto Sans CJK SC"),
-                                     QStringLiteral("Noto Sans Mono CJK SC")});
+                                     QStringLiteral("Noto Sans Mono CJK SC"),
+                                     QStringLiteral("Microsoft YaHei UI"),
+                                     QStringLiteral("Sarasa Mono SC")});
     } else {
         font.setFamily(m_fontFamily);
     }
     font.setStyleHint(QFont::Monospace);
     font.setFixedPitch(true);
     font.setPointSize(m_fontSize);
+    // Windows 的 ClearType 在 hand 风格下抗锯齿更好；全提示（PreferFullHinting）
+    // 会让小字号中文发糊
+#ifdef _WIN32
+    font.setHintingPreference(QFont::PreferDefaultHinting);
+#else
     font.setHintingPreference(QFont::PreferFullHinting);
+#endif
     return font;
 }
 
@@ -92,7 +103,7 @@ QString Theme::styleSheet() const
 QWidget {
     background: #19232D;
     color: #DFE4EA;
-    font-family: "Noto Sans CJK SC", "Source Han Sans SC", "Helvetica Neue", sans-serif;
+    font-family: "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei UI", "Segoe UI", "Helvetica Neue", sans-serif;
     font-size: 13px;
     selection-background-color: #148CD2;
     selection-color: #FFFFFF;

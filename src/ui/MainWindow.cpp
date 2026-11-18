@@ -180,7 +180,12 @@ void MainWindow::setupActions()
 
     fileMenu->addSeparator();
     auto *quitAction = fileMenu->addAction(QStringLiteral("退出"));
-    quitAction->setShortcut(QKeySequence::Quit);
+    // QKeySequence::Quit 在 Windows 上是空序列（那里靠 Alt+F4 关窗），
+    // 菜单里就显示不出任何快捷键，用户以为没法退出。
+    QKeySequence quitKeys = QKeySequence::Quit;
+    if (quitKeys.isEmpty())
+        quitKeys = QKeySequence(QStringLiteral("Alt+F4"));
+    quitAction->setShortcut(quitKeys);
     connect(quitAction, &QAction::triggered, this, &QWidget::close);
 
     auto *sessionMenu = menuBar()->addMenu(QStringLiteral("会话"));
