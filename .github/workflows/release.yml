@@ -1,0 +1,54 @@
+name: release
+
+# 打 v* 标签就自动构建并发布 Release：
+#   便携版 tar.gz / zip（自带 Qt）、deb、校验和
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake g++ libssl-dev libssh2-1-dev libgl1-mesa-dev zip
+
+      - name: 安装 Qt 6.8.2
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.2'
+          cache: true
+
+      - name: 单元测试
+        run: |
+          cmake -S . -B build-test -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+          cmake --build build-test -j"$(nproc)"
+          cd build-test && ctest --output-on-failure
+
+      - name: 构建并打包
+        run: QT_DIR="$QT_ROOT_DIR" ./packaging/make-release.sh
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: termdock ${{ github.ref_name }}
+          body_path: dist/RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+          files: |
+            dist/termdock-*-linux-x86_64.tar.gz
+            dist/termdock-*-linux-x86_64.zip
+            dist/termdock_*_amd64.deb
+            dist/SHA256SUMS
+            dist/MD5SUMS
