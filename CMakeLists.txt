@@ -79,6 +79,14 @@ else()
     target_compile_options(termdock PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()
 
+# 便携包把 Qt 库放在同级的 lib/ 下，运行时按 $ORIGIN/lib 找（系统安装时该目录不存在，
+# 自然回退到系统 Qt，不影响 deb 安装版）
+if(UNIX AND NOT APPLE)
+    set_target_properties(termdock PROPERTIES
+        BUILD_RPATH "\$ORIGIN/lib"
+        INSTALL_RPATH "\$ORIGIN/lib")
+endif()
+
 install(TARGETS termdock RUNTIME DESTINATION bin)
 install(FILES packaging/termdock.desktop DESTINATION share/applications)
 install(FILES assets/icons/termdock-16.png DESTINATION share/icons/hicolor/16x16/apps RENAME termdock.png)

@@ -127,6 +127,8 @@ void FileTreePanel::attach(SftpModel *model, SftpWorker *worker)
     m_view->setModel(model);
     if (model) {
         // 必须在设置 model 之后再配列宽，否则 Qt 会因为 section 数为 0 而崩溃
+        // 面板窄的时候（小窗口/窗口被拉窄）名称列会被挤到看不见，留一个最小宽度
+        m_view->header()->setMinimumSectionSize(96);
         m_view->header()->setSectionResizeMode(SftpModel::NameColumn, QHeaderView::Stretch);
         m_view->header()->setSectionResizeMode(SftpModel::SizeColumn, QHeaderView::ResizeToContents);
         m_view->header()->setSectionResizeMode(SftpModel::ModifiedColumn,

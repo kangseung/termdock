@@ -109,7 +109,7 @@ void MainWindow::setupUi()
     m_splitter->setStretchFactor(1, 1);
     m_splitter->setStretchFactor(2, 0);
     m_splitter->setChildrenCollapsible(false);
-    m_splitter->setSizes({300, 640, 280});
+    m_splitter->setSizes({380, 620, 300});
     setCentralWidget(m_splitter);
 
     m_statusInfo = new QLabel(this);
