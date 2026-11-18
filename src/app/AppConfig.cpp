@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QSettings>
 #include <QStandardPaths>
 
@@ -63,9 +64,12 @@ QString AppConfig::executableDir()
 QString AppConfig::defaultDataDir()
 {
     // 优先跟软件放一起（便携式）；但临时目录、开发构建目录不算「软件目录」，
-    // 那些位置重启/重新构建就没了，绝不能放数据
-    const QString beside = executableDir() + QStringLiteral("/termdock-data");
-    if (isDirWritable(executableDir()) && !looksVolatile(executableDir()))
+    // 那些位置重启/重新构建就没了，绝不能放数据。
+    // 装在 bin/ 目录里的情况（如 ~/.local/bin）也不放旁边：bin 是程序目录，数据该在配置目录。
+    const QString exeDir = executableDir();
+    const QString beside = exeDir + QStringLiteral("/termdock-data");
+    const bool installedInBin = QFileInfo(exeDir).fileName() == QStringLiteral("bin");
+    if (!installedInBin && isDirWritable(exeDir) && !looksVolatile(exeDir))
         return QDir::cleanPath(beside);
 
     QString base = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
