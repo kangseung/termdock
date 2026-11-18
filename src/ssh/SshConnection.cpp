@@ -266,6 +266,16 @@ bool SshConnection::connectAndAuth(const SshParams &params, int timeoutMs, QStri
         close();
         return false;
     }
+    // 必须在 authenticate() 之前核对指纹：否则密码已经交给可能是中人的主机。
+    // ShellSession 和 SftpWorker 都走这里，所以两条通道都会被挡住。
+    if (!params.expectedFingerprint.isEmpty() && params.expectedFingerprint != m_fingerprint) {
+        if (error) {
+            *error = QStringLiteral("主机密钥已变化，连接已中止（未发送密码）：记录的指纹 %1，本次为 %2")
+                         .arg(params.expectedFingerprint, m_fingerprint);
+        }
+        close();
+        return false;
+    }
     if (!authenticate(params, timeoutMs, error)) {
         close();
         return false;

@@ -49,6 +49,9 @@ QJsonObject Session::toJson() const
         const QString encrypted = Crypto::encrypt(password);
         if (!encrypted.isEmpty())
             object.insert(QStringLiteral("password"), encrypted);
+    } else if (!passwordCipher.isEmpty()) {
+        // 解不开就原样留着：主密钥找回来时还能恢复，不能被一次保存清空
+        object.insert(QStringLiteral("password"), passwordCipher);
     }
     return object;
 }
@@ -74,6 +77,7 @@ Session Session::fromJson(const QJsonObject &object, bool *passwordDecryptFailed
         *passwordDecryptFailed = false;
     const QString encrypted = object.value(QStringLiteral("password")).toString();
     if (!encrypted.isEmpty()) {
+        session.passwordCipher = encrypted;
         QString error;
         session.password = Crypto::decrypt(encrypted, &error);
         if (session.password.isEmpty() && passwordDecryptFailed)

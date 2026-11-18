@@ -12,6 +12,8 @@ struct SshParams {
     QString user;
     QString password;
     bool allowUnknownHostKey = true; // 首次连接采用 TOFU：记录指纹
+    // 已记录的主机指纹；非空时握手后、发送凭据前必须精确匹配，否则中止连接
+    QString expectedFingerprint;
 };
 
 // 封装 socket + libssh2 会话的建立过程（连接、握手、认证、指纹）。

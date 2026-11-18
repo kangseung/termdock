@@ -364,6 +364,7 @@ void MainWindow::openSession(const Session &session)
     params.port = session.port;
     params.user = session.user;
     params.password = session.password;
+    params.expectedFingerprint = SessionStore::knownFingerprint(session.host, session.port);
 
     page->shell = new ShellSession(params, page->terminal->screen()->cols(),
                                    page->terminal->screen()->rows(), this);
@@ -463,6 +464,8 @@ void MainWindow::onShellConnected(Page *page, const QString &fingerprint, const 
                 .arg(page->session.port)
                 .arg(known, fingerprint));
         page->shell->stop();
+        if (page->sftp)
+            page->sftp->stop();
         return;
     }
     updateTabTitle(page);

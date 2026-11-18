@@ -13,7 +13,9 @@ struct Session {
     QString host;
     int port = 22;
     QString user;
-    QString password; // 内存中为明文，落盘时由 Crypto 加密
+    QString password;
+    // 原始密文：解密失败（比如 key 丢了）时原样写回，避免把还能救的密码抹掉
+    QString passwordCipher; // 内存中为明文，落盘时由 Crypto 加密
     QString note;
     QString color;
 

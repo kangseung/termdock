@@ -99,8 +99,13 @@ QString AppConfig::dataDir()
         return g_overrideDir;
 
     const QByteArray fromEnv = qgetenv("TERMDOCK_DATA_DIR");
-    if (!fromEnv.isEmpty())
-        return QDir::cleanPath(QString::fromUtf8(fromEnv));
+    if (!fromEnv.isEmpty()) {
+        const QString envDir = QDir::cleanPath(QString::fromUtf8(fromEnv));
+        // 环境变量同样不接受临时目录：那里的 key/sessions 重启就没了
+        if (!isInsideTempDir(envDir))
+            return envDir;
+        qWarning("termdock: 忽略临时目录里的 TERMDOCK_DATA_DIR=%s", qPrintable(envDir));
+    }
 
     const QString stored = QSettings().value(QLatin1String(kSettingsKey)).toString();
     if (!stored.isEmpty()) {
@@ -147,6 +152,8 @@ bool AppConfig::setDataDir(const QString &path)
 
 void AppConfig::setDataDirOverride(const QString &path)
 {
+    if (!path.isEmpty() && isInsideTempDir(path))
+        qWarning("termdock: 数据目录在临时目录 %s，进程退出后数据会丢", qPrintable(path));
     g_overrideDir = path.isEmpty() ? QString() : QDir::cleanPath(path);
 }
 

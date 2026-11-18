@@ -36,9 +36,16 @@ bool Recovery::enable(const QString &passphrase, QString *error)
             *error = QStringLiteral("无法写入 %1").arg(filePath());
         return false;
     }
-    file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-    file.write(QJsonDocument(payload).toJson(QJsonDocument::Indented));
+    const QByteArray body = QJsonDocument(payload).toJson(QJsonDocument::Indented);
+    const bool written = file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)
+        && file.write(body) == body.size() && file.flush();
     file.close();
+    if (!written) {
+        QFile::remove(filePath());
+        if (error)
+            *error = QStringLiteral("恢复数据写入失败（已清理半成品）：%1").arg(filePath());
+        return false;
+    }
     return true;
 }
 

@@ -23,6 +23,8 @@ public:
                                      QString *error = nullptr);
 
     static QByteArray masterKey(QString *error = nullptr);
+    // 只读路径用：key 文件不存在就报错，绝不现场生成（否则会把还能救的密文废掉）
+    static QByteArray existingMasterKey(QString *error = nullptr);
     static QByteArray randomBytes(int count);
 
     // 恢复保险：口令 → PBKDF2 → KEK → 包住主密钥
@@ -31,6 +33,7 @@ public:
                                       QString *error = nullptr);
 
 private:
+    static QByteArray readKey(bool createIfMissing, QString *error);
     static QByteArray deriveKey(const QByteArray &passphrase, const QByteArray &salt, int iterations);
 };
 

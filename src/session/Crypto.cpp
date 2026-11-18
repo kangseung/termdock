@@ -30,6 +30,16 @@ QByteArray Crypto::randomBytes(int count)
 
 QByteArray Crypto::masterKey(QString *error)
 {
+    return readKey(true, error);
+}
+
+QByteArray Crypto::existingMasterKey(QString *error)
+{
+    return readKey(false, error);
+}
+
+QByteArray Crypto::readKey(bool createIfMissing, QString *error)
+{
     const QString path = AppConfig::keyFile();
     QFile file(path);
     if (file.exists()) {
@@ -44,7 +54,18 @@ QByteArray Crypto::masterKey(QString *error)
                 *error = QStringLiteral("密钥文件损坏：%1").arg(path);
             return QByteArray();
         }
+        // 权限过宽时收紧；收紧失败要说出来，不能悄悄继续
+        if (file.permissions() & (QFileDevice::ReadGroup | QFileDevice::ReadOther)) {
+            if (!file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner))
+                qWarning("termdock: 无法把 %s 收紧到 0600，请手动 chmod", qPrintable(path));
+        }
         return key;
+    }
+
+    if (!createIfMissing) {
+        if (error)
+            *error = QStringLiteral("密钥文件不存在：%1（不会自动新建，避免破坏已有密文）").arg(path);
+        return QByteArray();
     }
 
     if (!AppConfig::ensureConfigDir()) {
@@ -63,9 +84,16 @@ QByteArray Crypto::masterKey(QString *error)
             *error = QStringLiteral("无法写入密钥文件 %1").arg(path);
         return QByteArray();
     }
-    file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-    file.write(key);
+    // 先收紧权限再写内容；任何一步失败都删掉半成品，绝不假装成功
+    const bool written = file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)
+        && file.write(key) == key.size() && file.flush();
     file.close();
+    if (!written) {
+        QFile::remove(path);
+        if (error)
+            *error = QStringLiteral("密钥文件写入失败（已清理半成品）：%1").arg(path);
+        return QByteArray();
+    }
     return key;
 }
 
@@ -193,7 +221,8 @@ QString Crypto::encrypt(const QString &plain, QString *error)
 
 QString Crypto::decrypt(const QString &encoded, QString *error)
 {
-    const QByteArray key = masterKey(error);
+    // 读路径不允许隐式生成密钥：key 丢了就先报错，别把还能救的密文抹掉
+    const QByteArray key = existingMasterKey(error);
     if (key.isEmpty())
         return QString();
     return QString::fromUtf8(decryptWithKey(key, encoded, error));
@@ -247,9 +276,17 @@ QJsonObject Crypto::wrapMasterKey(const QString &passphrase, QString *error)
 QByteArray Crypto::unwrapMasterKey(const QJsonObject &payload, const QString &passphrase,
                                    QString *error)
 {
+    const QString kdf = payload.value(QStringLiteral("kdf")).toString();
+    const int version = payload.value(QStringLiteral("version")).toInt(1);
+    const int iterations = payload.value(QStringLiteral("iterations")).toInt(kKdfIterations);
+    if (version != 1 || kdf != QLatin1String("pbkdf2-sha256") || iterations < 1000
+        || iterations > 10000000) {
+        if (error)
+            *error = QStringLiteral("恢复数据参数不正确（版本/算法/迭代次数异常）");
+        return QByteArray();
+    }
     const QByteArray salt = QByteArray::fromBase64(
         payload.value(QStringLiteral("salt")).toString().toLatin1());
-    const int iterations = payload.value(QStringLiteral("iterations")).toInt(kKdfIterations);
     const QString wrapped = payload.value(QStringLiteral("wrapped")).toString();
     if (salt.isEmpty() || wrapped.isEmpty()) {
         if (error)

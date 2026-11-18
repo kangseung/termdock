@@ -305,6 +305,41 @@ int runSelfTest()
         test.check(!QIcon(QStringLiteral(":/icons/termdock-256.png")).isNull(),
                    QStringLiteral("内置应用图标可加载"));
 
+        // 安全审查修复的回归断言
+        {
+            // 1) 解不开的密文必须原样保留，不能被一次保存抹掉
+            QJsonObject raw;
+            raw.insert(QStringLiteral("name"), QStringLiteral("t"));
+            raw.insert(QStringLiteral("host"), QStringLiteral("h"));
+            raw.insert(QStringLiteral("password"), QStringLiteral("gcm1:broken"));
+            const Session parsed = Session::fromJson(raw);
+            test.check(parsed.toJson().value(QStringLiteral("password")).toString()
+                           == QStringLiteral("gcm1:broken"),
+                       QStringLiteral("解密失败时保留原始密文"));
+        }
+        {
+            // 2) 恢复数据里的 iterations 越界必须拒绝，不能把 GUI 卡死
+            QJsonObject payload;
+            payload.insert(QStringLiteral("version"), 1);
+            payload.insert(QStringLiteral("kdf"), QStringLiteral("pbkdf2-sha256"));
+            payload.insert(QStringLiteral("iterations"), 2000000000);
+            payload.insert(QStringLiteral("salt"), QString::fromLatin1("AAAA"));
+            payload.insert(QStringLiteral("wrapped"), QStringLiteral("gcm1:AAAA"));
+            QString boundsError;
+            test.check(Crypto::unwrapMasterKey(payload, QStringLiteral("x"), &boundsError).isEmpty()
+                           && !boundsError.isEmpty(),
+                       QStringLiteral("恢复数据迭代次数越界被拒绝"));
+        }
+        {
+            // 3) TERMDOCK_DATA_DIR 指向临时目录时要被忽略
+            qputenv("TERMDOCK_DATA_DIR", "/tmp/termdock-should-ignore");
+            const QString ignored = AppConfig::dataDir();
+            qunsetenv("TERMDOCK_DATA_DIR");
+            // 自检本身跑在 /tmp 沙箱里，所以只断言"没有采用那个环境变量"
+            test.check(ignored != QStringLiteral("/tmp/termdock-should-ignore"),
+                       QStringLiteral("环境变量指向临时目录时被忽略"), ignored);
+        }
+
         // 反复 resize 压力测试：曾因为裁剪用固定次数 pop_back 而踩空段错误
         {
             VtScreen stress(80, 24, 2000);
