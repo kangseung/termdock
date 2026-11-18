@@ -66,6 +66,8 @@ private:
     void activateSessionFromPanel(const QString &id);
     void closePage(int tabIndex);
     void onTabChanged(int index);
+    // 右键标签页：编辑会话、再开一个、关闭
+    void showTabMenu(const QPoint &pos);
     void updateTabPlaceholder();
     void onShellConnected(Page *page, const QString &fingerprint, const QString &hostKeyType);
     void onShellFailed(Page *page, const QString &message);
@@ -78,7 +80,6 @@ private:
     // 关闭页面前先断信号、停线程，避免回调摸到已释放的 Page
     void teardownPage(Page *page);
     void confirmQuit();
-    Page *findPageBySessionId(const QString &id) const;
     int pageIndexOf(const Page *page) const;
     Session *findSession(const QString &id);
 

@@ -16,11 +16,13 @@
 #include <QCloseEvent>
 #include <QKeySequence>
 #include <QLabel>
+#include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QSettings>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTimer>
 #include <QStackedWidget>
@@ -116,6 +118,10 @@ void MainWindow::setupUi()
 
     connect(m_tabs, &QTabWidget::currentChanged, this, &MainWindow::onTabChanged);
     connect(m_tabs, &QTabWidget::tabCloseRequested, this, &MainWindow::closePage);
+    // 右键标签页：编辑会话（等价于会话簿里的“编辑…”）、再开一个、关闭
+    m_tabs->tabBar()->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_tabs->tabBar(), &QWidget::customContextMenuRequested, this,
+            &MainWindow::showTabMenu);
 
     connect(m_sessionPanel, &SessionPanel::connectRequested, this, &MainWindow::activateSessionFromPanel);
     connect(m_sessionPanel, &SessionPanel::newRequested, this, &MainWindow::newSession);
@@ -314,11 +320,41 @@ void MainWindow::activateSessionFromPanel(const QString &id)
 {
     if (id.isEmpty())
         return;
-    if (Page *page = findPageBySessionId(id)) {
-        m_tabs->setCurrentIndex(pageIndexOf(page));
-        return;
-    }
+    // 同一个会话可以开多个标签页（每页一条独立 SSH 连接）：
+    // 已经连着也照样再开一个新的，而不是把已有标签拉到前面。
     openSessionById(id);
+}
+
+void MainWindow::showTabMenu(const QPoint &pos)
+{
+    QTabBar *bar = m_tabs->tabBar();
+    const int index = bar->tabAt(pos);
+    if (index < 0 || index >= m_pages.size())
+        return;
+    Page *page = m_pages.at(index);
+
+    QMenu menu(this);
+    QAction *editAction = menu.addAction(QStringLiteral("编辑会话…"));
+    // 命令行直连的标签不在会话簿里，没什么可编辑的
+    editAction->setEnabled(findSession(page->session.id) != nullptr);
+    connect(editAction, &QAction::triggered, this,
+            [this, page]() { editSession(page->session.id); });
+
+    QAction *anotherAction = menu.addAction(QStringLiteral("再开一个标签页"));
+    connect(anotherAction, &QAction::triggered, this,
+            [this, page]() { openSession(page->session); });
+
+    menu.addSeparator();
+    QAction *closeAction = menu.addAction(QStringLiteral("关闭标签页"));
+    connect(closeAction, &QAction::triggered, this, [this, page]() {
+        // 菜单还在 exec 里，关页会释放 page，推到事件循环下一轮再关
+        QTimer::singleShot(0, this, [this, page]() {
+            const int pageIndex = pageIndexOf(page);
+            if (pageIndex >= 0)
+                closePage(pageIndex);
+        });
+    });
+    menu.exec(bar->mapToGlobal(pos));
 }
 
 bool MainWindow::openSessionById(const QString &id)
@@ -340,10 +376,6 @@ bool MainWindow::connectDirect(const Session &session)
 
 void MainWindow::openSession(const Session &session)
 {
-    if (Page *existing = findPageBySessionId(session.id)) {
-        m_tabs->setCurrentIndex(pageIndexOf(existing));
-        return;
-    }
 
     // 指纹库读不出来时不能当成"首次连接"一路直连：先让用户明确决定
     QString knownHostsError;
@@ -373,6 +405,11 @@ void MainWindow::openSession(const Session &session)
     m_tabs->setCurrentIndex(tabIndex);
     // 连上就把键盘焦点交给终端，用户不用再点一下才能输入
     page->terminal->setFocus(Qt::OtherFocusReason);
+    // 同会话的其它标签也要刷新标题序号
+    for (Page *other : m_pages) {
+        if (other->session.id == session.id)
+            updateTabTitle(other);
+    }
 
     SshParams params;
     params.host = session.host;
@@ -531,6 +568,17 @@ void MainWindow::updateTabTitle(Page *page)
     QString title = page->terminal->screen()->title();
     if (title.isEmpty())
         title = page->session.name;
+    // 同一会话开了多个标签页时加序号，否则几个标签一眼看不出区别
+    int ordinal = 0;
+    for (Page *other : m_pages) {
+        if (other->session.id == page->session.id) {
+            ++ordinal;
+            if (other == page)
+                break;
+        }
+    }
+    if (ordinal > 1)
+        title += QStringLiteral(" (%1)").arg(ordinal);
     if (!page->shellConnected)
         title += QStringLiteral(" · 已断开");
     m_tabs->setTabText(index, title);
@@ -609,15 +657,6 @@ MainWindow::Page *MainWindow::currentPage() const
     if (index < 0 || index >= m_pages.size())
         return nullptr;
     return m_pages.at(index);
-}
-
-MainWindow::Page *MainWindow::findPageBySessionId(const QString &id) const
-{
-    for (Page *page : m_pages) {
-        if (page->session.id == id)
-            return page;
-    }
-    return nullptr;
 }
 
 int MainWindow::pageIndexOf(const Page *page) const

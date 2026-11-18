@@ -132,11 +132,9 @@ void SessionPanel::setupUi()
 
     connect(m_newButton, &QPushButton::clicked, this, &SessionPanel::newRequested);
     connect(m_search, &QLineEdit::textChanged, this, [this]() { rebuild(); });
+    // 只连 activated：X11 上双击会同时发 activated 和 doubleClicked，
+    // 两个都连等于一次双击开两个连接（键盘回车也走 activated）
     connect(m_list, &QListWidget::itemActivated, this, [this](QListWidgetItem *item) {
-        if (item)
-            emit connectRequested(item->data(Qt::UserRole).toString());
-    });
-    connect(m_list, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) {
         if (item)
             emit connectRequested(item->data(Qt::UserRole).toString());
     });
