@@ -232,7 +232,6 @@ int runSelfTest()
         QString badError;
         Crypto::decrypt(QStringLiteral("gcm1:AAAA"), &badError);
         test.check(!badError.isEmpty(), QStringLiteral("损坏的密文会被拒绝"));
-        QFile::remove(AppConfig::keyFile());
     }
 
     out() << "\n结果：" << (test.checks - test.failures) << "/" << test.checks << " 通过，"
@@ -421,6 +420,17 @@ int runConnectTest(const QString &host, int port, const QString &user, const QSt
 
 int main(int argc, char *argv[])
 {
+    // --selftest 会做加解密往返，必须在沙箱配置目录里跑，
+    // 否则会创建/覆盖用户真实的 key 与 sessions.json。
+    for (int i = 1; i < argc; ++i) {
+        if (qstrcmp(argv[i], "--selftest") == 0) {
+            const QString sandbox = QDir::tempPath() + QStringLiteral("/termdock-selftest-config");
+            QDir(sandbox).removeRecursively();
+            qputenv("XDG_CONFIG_HOME", sandbox.toUtf8());
+            break;
+        }
+    }
+
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("termdock"));
     QApplication::setApplicationVersion(QStringLiteral("0.1.0"));

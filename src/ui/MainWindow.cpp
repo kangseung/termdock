@@ -323,6 +323,8 @@ void MainWindow::openSession(const Session &session)
     const int tabIndex = m_tabs->addTab(page->terminal, session.name);
     m_pages.append(page);
     m_tabs->setCurrentIndex(tabIndex);
+    // 连上就把键盘焦点交给终端，用户不用再点一下才能输入
+    page->terminal->setFocus(Qt::OtherFocusReason);
 
     SshParams params;
     params.host = session.host;
@@ -522,8 +524,10 @@ void MainWindow::onTabChanged(int index)
     } else {
         m_filePanel->detach();
     }
-    if (page)
+    if (page) {
         m_sessionPanel->setActiveSessionId(page->session.id);
+        page->terminal->setFocus(Qt::OtherFocusReason);
+    }
     updateStatusBar();
 }
 
