@@ -6,6 +6,7 @@
 #include "../src/session/Crypto.h"
 #include "../src/session/Recovery.h"
 #include "../src/session/Session.h"
+#include "../src/session/SessionStore.h"
 #include "../src/term/VtParser.h"
 #include "../src/term/VtScreen.h"
 
@@ -331,6 +332,42 @@ void testRecoveryLifecycle()
     check(!QFile::exists(Recovery::filePath()), "关闭后 recovery.json 被删除");
 }
 
+void testKnownHostsStates()
+{
+    // 沙箱里没有 known_hosts.json → 首次连接
+    check(SessionStore::knownHostsState() == SessionStore::KnownHosts::Missing,
+          "没有指纹库时状态为首次连接");
+
+    QString error;
+    check(SessionStore::rememberFingerprint(QStringLiteral("192.0.2.1"), 22,
+                                            QStringLiteral("SHA256:abc"), &error),
+          "写入指纹成功", error);
+    check(SessionStore::knownHostsState() == SessionStore::KnownHosts::Ok, "写入后状态正常");
+    check(SessionStore::knownFingerprint(QStringLiteral("192.0.2.1"), 22)
+              == QStringLiteral("SHA256:abc"),
+          "读回刚写入的指纹");
+
+    // 把文件写坏：必须报"损坏"，不能被当成首次连接直接信任
+    QFile broken(AppConfig::knownHostsFile());
+    check(broken.open(QIODevice::WriteOnly | QIODevice::Truncate), "可以写坏指纹库做测试");
+    broken.write("{ not json");
+    broken.close();
+    QString corruptError;
+    check(SessionStore::knownHostsState(&corruptError) == SessionStore::KnownHosts::Corrupt,
+          "指纹库损坏时状态为 Corrupt");
+    check(!corruptError.isEmpty(), "损坏时给出可读的错误信息", corruptError);
+}
+
+void testPassphraseMinimum()
+{
+    QString error;
+    check(Crypto::wrapMasterKey(QStringLiteral("1234567"), &error).isEmpty() && !error.isEmpty(),
+          "7 位口令被拒绝（最少 8 位）");
+    error.clear();
+    check(!Crypto::wrapMasterKey(QStringLiteral("12345678"), &error).isEmpty(),
+          "8 位口令可以设置", error);
+}
+
 // ---------------- 数据目录规则 ----------------
 
 void testDataDirRules()
@@ -387,6 +424,12 @@ int main(int argc, char **argv)
     testSessionPortClamp();
     testSessionKeepsUnreadableCipher();
     testRecoveryLifecycle();
+
+    std::printf("== 主机指纹库\n");
+    testKnownHostsStates();
+
+    std::printf("== 口令策略\n");
+    testPassphraseMinimum();
 
     std::printf("== 数据目录规则\n");
     testDataDirRules();

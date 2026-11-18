@@ -92,7 +92,7 @@
 | `<数据目录>/sessions.json` | 会话列表，密码字段形如 `gcm1:<base64(iv\|密文\|tag)>`（0600） |
 | `<数据目录>/key` | 32 字节主密钥（0600），AES-256-GCM 的实际密钥 |
 | `<数据目录>/recovery.json` | 可选。用安全密钥经 PBKDF2-SHA256（21 万次）派生的 KEK 包住主密钥 |
-| `<数据目录>/known_hosts.json` | 主机指纹（TOFU），指纹变化会**直接中止连接** |
+| `<数据目录>/known_hosts.json` | 主机指纹（TOFU）。指纹变化**直接中止连接**（密码不会发出去）；文件损坏时不会当成首次连接，会先问你
 
 要点：
 
@@ -109,6 +109,9 @@
 - 即使 `key` 文件丢了或换了机器，也能把历史密码解出来
 
 删除就是移除 `recovery.json`，随时可以重设。密钥错了会被 GCM 校验直接拒绝。
+
+密钥长度下限 8 位（建议 12 位以上）。强调一句：`recovery.json` 是纯离线数据，没有次数限制，
+弱密钥等于把主密钥送人——拿到文件就能在本地慢慢爆破。
 
 ---
 
@@ -194,7 +197,7 @@ src/ui/             MainWindow、SessionPanel、SessionDialog、FileTreePanel、
 ## 测试
 
 ```bash
-ctest --test-dir build --output-on-failure   # 59 条单元测试（VT 内核 / 解析器 / 加密 / 会话 / 恢复 / 数据目录）
+ctest --test-dir build --output-on-failure   # 68 条单元测试（VT 内核 / 解析器 / 加密 / 会话 / 恢复 / 数据目录）
 ./build/termdock --selftest                  # 64 条端到端自检（含网络无关的 PTY、输入法、关闭流程）
 ./build/termdock --connect-test <host> --user <user>   # 真机 SSH/SFTP 联通测试（需 TERMDOCK_PASSWORD）
 ```

@@ -125,7 +125,8 @@ bool VaultDialog::promptEnable(QWidget *parent)
     bool ok = false;
     const QString first = QInputDialog::getText(
         parent, QStringLiteral("设置安全密钥"),
-        QStringLiteral("设置一个安全密钥（至少 6 位）。\n以后凭它就能解锁并查看已保存的 SSH 明文密码，请自己记牢："),
+        QStringLiteral("设置一个安全密钥（至少 8 位，建议 12 位以上并混用数字与符号）。\n"
+                       "以后凭它就能解锁并查看已保存的 SSH 明文密码；这是唯一的离线防线，请自己记牢："),
         QLineEdit::Password, QString(), &ok);
     if (!ok || first.isEmpty())
         return false;

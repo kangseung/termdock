@@ -104,6 +104,29 @@ bool SessionStore::save(const SessionList &sessions, QString *error)
     return true;
 }
 
+// 只看文件状态：不存在=首次连接，解析不了=指纹库损坏（两者绝不能混为一谈）
+SessionStore::KnownHosts SessionStore::knownHostsState(QString *error)
+{
+    const QString path = AppConfig::knownHostsFile();
+    if (!QFile::exists(path))
+        return KnownHosts::Missing;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = QStringLiteral("无法读取 %1：%2").arg(path, file.errorString());
+        return KnownHosts::Corrupt;
+    }
+    QJsonParseError parseError{};
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        if (error) {
+            *error = QStringLiteral("%1 无法解析：%2").arg(path, parseError.errorString());
+        }
+        return KnownHosts::Corrupt;
+    }
+    return KnownHosts::Ok;
+}
+
 QString SessionStore::knownFingerprint(const QString &host, int port)
 {
     QJsonObject root;
@@ -113,7 +136,8 @@ QString SessionStore::knownFingerprint(const QString &host, int port)
     return root.value(key).toObject().value(QStringLiteral("fingerprint")).toString();
 }
 
-void SessionStore::rememberFingerprint(const QString &host, int port, const QString &fingerprint)
+bool SessionStore::rememberFingerprint(const QString &host, int port, const QString &fingerprint,
+                                       QString *error)
 {
     QJsonObject root;
     readJson(AppConfig::knownHostsFile(), &root, nullptr);
@@ -123,13 +147,25 @@ void SessionStore::rememberFingerprint(const QString &host, int port, const QStr
                  QString::number(QDateTime::currentSecsSinceEpoch()));
     root.insert(QStringLiteral("%1:%2").arg(host).arg(port), entry);
 
-    if (!AppConfig::ensureConfigDir())
-        return;
+    if (!AppConfig::ensureConfigDir()) {
+        if (error)
+            *error = QStringLiteral("无法创建数据目录 %1").arg(AppConfig::dataDir());
+        return false;
+    }
     QSaveFile file(AppConfig::knownHostsFile());
-    if (!file.open(QIODevice::WriteOnly))
-        return;
+    if (!file.open(QIODevice::WriteOnly)) {
+        if (error)
+            *error = QStringLiteral("无法写入 %1：%2").arg(file.fileName(), file.errorString());
+        return false;
+    }
+    file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
     file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
-    file.commit();
+    if (!file.commit()) {
+        if (error)
+            *error = QStringLiteral("保存主机指纹失败：%1").arg(file.errorString());
+        return false;
+    }
+    return true;
 }
 
 void SessionStore::forgetFingerprint(const QString &host, int port)

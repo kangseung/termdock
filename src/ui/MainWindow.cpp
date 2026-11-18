@@ -345,6 +345,21 @@ void MainWindow::openSession(const Session &session)
         return;
     }
 
+    // 指纹库读不出来时不能当成"首次连接"一路直连：先让用户明确决定
+    QString knownHostsError;
+    if (SessionStore::knownHostsState(&knownHostsError) == SessionStore::KnownHosts::Corrupt) {
+        const auto answer = QMessageBox::warning(
+            this, QStringLiteral("主机指纹库损坏"),
+            QStringLiteral("%1\n\n指纹库读不出来，继续连接就没法核对 %2 的身份（等同于首次连接）。"
+                           "\n\n信任这次连接并重建指纹库吗？")
+                .arg(knownHostsError, session.displayTarget()),
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+        if (answer != QMessageBox::Yes) {
+            statusBar()->showMessage(QStringLiteral("已取消连接：主机指纹库损坏"), 8000);
+            return;
+        }
+    }
+
     auto *page = new Page();
     page->session = session;
     page->terminal = new TerminalWidget(m_tabs);
@@ -449,10 +464,17 @@ void MainWindow::onShellConnected(Page *page, const QString &fingerprint, const 
 
     const QString known = SessionStore::knownFingerprint(page->session.host, page->session.port);
     if (known.isEmpty()) {
-        SessionStore::rememberFingerprint(page->session.host, page->session.port, fingerprint);
-        statusBar()->showMessage(QStringLiteral("%1 首次连接，已记录主机指纹 %2（%3）")
-                                     .arg(page->session.host, fingerprint, hostKeyType),
-                                 8000);
+        QString saveError;
+        if (SessionStore::rememberFingerprint(page->session.host, page->session.port, fingerprint,
+                                              &saveError)) {
+            statusBar()->showMessage(QStringLiteral("%1 首次连接，已记录主机指纹 %2（%3）")
+                                         .arg(page->session.host, fingerprint, hostKeyType),
+                                     8000);
+        } else {
+            // 没落盘就得说清楚，否则用户以为以后会被校验
+            statusBar()->showMessage(
+                QStringLiteral("指纹没能保存（%1），下次连接还会重新信任").arg(saveError), 15000);
+        }
     } else if (known != fingerprint) {
         page->terminal->setConnected(false);
         page->terminal->setStatusText(QStringLiteral("主机密钥已变化，连接已中止"));

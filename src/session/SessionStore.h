@@ -13,8 +13,12 @@ public:
     static bool save(const SessionList &sessions, QString *error = nullptr);
 
     // 主机指纹：首次连接记录（TOFU），之后不一致就拒绝连接。
+    // 指纹库状态要和"没有这条记录"区分开：文件坏了不能当成首次连接直接信任。
+    enum class KnownHosts { Ok, Missing, Corrupt };
+    static KnownHosts knownHostsState(QString *error = nullptr);
     static QString knownFingerprint(const QString &host, int port);
-    static void rememberFingerprint(const QString &host, int port, const QString &fingerprint);
+    static bool rememberFingerprint(const QString &host, int port, const QString &fingerprint,
+                                   QString *error = nullptr);
     static void forgetFingerprint(const QString &host, int port);
 };
 

@@ -242,9 +242,10 @@ QByteArray Crypto::deriveKey(const QByteArray &passphrase, const QByteArray &sal
 
 QJsonObject Crypto::wrapMasterKey(const QString &passphrase, QString *error)
 {
-    if (passphrase.size() < 6) {
+    // 8 位起：这份数据没有任何在线限速，离线爆破全看口令强度
+    if (passphrase.size() < 8) {
         if (error)
-            *error = QStringLiteral("恢复口令至少 6 个字符");
+            *error = QStringLiteral("安全密钥至少 8 个字符");
         return QJsonObject();
     }
     const QByteArray key = masterKey(error);

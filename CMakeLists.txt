@@ -96,6 +96,7 @@ add_executable(termdock-tests
     src/session/Crypto.cpp
     src/session/Recovery.cpp
     src/session/Session.cpp
+    src/session/SessionStore.cpp
     src/app/AppConfig.cpp
 )
 target_include_directories(termdock-tests PRIVATE src)
