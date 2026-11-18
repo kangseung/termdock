@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QHash>
+#include <QSet>
+#include <QTimer>
 #include <QVector>
 #include <QWidget>
 
@@ -26,6 +28,10 @@ public:
     void detach();
     void setStatus(const QString &message);
 
+protected:
+    // 拖拽上传：监听文件树视口的 DragEnter/DragMove/Drop
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
     void setupUi();
     void showContextMenu(const QPoint &pos);
@@ -43,6 +49,11 @@ private:
     quint64 enqueueStructural(SftpWorker::Op op, const QString &path,
                              const QString &path2 = QString());
     void refreshDirPath(const QString &path);
+    void flushRefresh();
+    // 拖拽落地目录：文件夹行就是它自己，文件行/空白处是当前目录
+    QString dropTargetDir(const QPoint &pos) const;
+    // 本地文件直接上传；本地文件夹先递归 mkdir 再传里面的文件（队列 FIFO 保证顺序）
+    void uploadLocalPath(const QString &local, const QString &remoteDir);
 
     QModelIndex selectedIndex() const;
     QModelIndex currentDirectoryIndex() const;
@@ -54,8 +65,12 @@ private:
     QLabel *m_status = nullptr;
     SftpModel *m_model = nullptr;
     SftpWorker *m_worker = nullptr;
-    QHash<quint64, QString> m_pendingDownloads;
+    QHash<quint64, QString> m_openAfterDownload; // 双击预览下载的文件，下载完成后自动打开
     QHash<quint64, QString> m_refreshDirs;
+    // 拖拽/批量操作会短时间内产生很多次刷新，合并成一次
+    QSet<QString> m_pendingRefreshPaths;
+    QTimer m_refreshTimer;
+    QString m_statusBeforeDrag;
     // attach() 建立的连接，detach() 时逐条断开，避免切换标签时信号重复发送
     QVector<QMetaObject::Connection> m_attached;
 };

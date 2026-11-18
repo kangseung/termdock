@@ -7,6 +7,9 @@
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QDir>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
@@ -14,6 +17,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QStandardPaths>
 #include <QToolBar>
 #include <QTreeView>
@@ -60,6 +64,9 @@ void FileTreePanel::setupUi()
     m_view->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_view->setContextMenuPolicy(Qt::CustomContextMenu);
     m_view->header()->setStretchLastSection(false);
+    // 拖拽上传：把本地文件/文件夹拖到树里（文件夹行 → 该文件夹，其他位置 → 当前目录）
+    m_view->viewport()->setAcceptDrops(true);
+    m_view->viewport()->installEventFilter(this);
     layout->addWidget(m_view, 1);
 
     m_status = new QLabel(this);
@@ -71,6 +78,10 @@ void FileTreePanel::setupUi()
     connect(m_view, &QTreeView::doubleClicked, this, &FileTreePanel::openSelection);
     connect(m_view, &QWidget::customContextMenuRequested, this, &FileTreePanel::showContextMenu);
     // 选择模型要等 setModel 之后才存在，相关信号在 attach() 里连接
+
+    m_refreshTimer.setSingleShot(true);
+    m_refreshTimer.setInterval(200);
+    connect(&m_refreshTimer, &QTimer::timeout, this, &FileTreePanel::flushRefresh);
 
     updatePathLabel();
 }
@@ -109,7 +120,7 @@ void FileTreePanel::attach(SftpModel *model, SftpWorker *worker)
         m_attached.append(connect(worker, &SftpWorker::succeeded, this,
                                   [this](quint64 id, const QString &message) {
                                       setStatus(message);
-                                      const QString localPath = m_pendingDownloads.take(id);
+                                      const QString localPath = m_openAfterDownload.take(id);
                                       if (!localPath.isEmpty())
                                           QDesktopServices::openUrl(QUrl::fromLocalFile(localPath));
                                       // 结构变化后自动刷新受影响目录，省得用户手动点刷新。
@@ -135,8 +146,10 @@ void FileTreePanel::detach()
     m_view->setModel(nullptr);
     m_model = nullptr;
     m_worker = nullptr;
-    m_pendingDownloads.clear();
+    m_openAfterDownload.clear();
     m_refreshDirs.clear();
+    m_pendingRefreshPaths.clear();
+    m_refreshTimer.stop();
     setStatus(QStringLiteral("未连接"));
     updatePathLabel();
 }
@@ -202,11 +215,120 @@ void FileTreePanel::refreshDirPath(const QString &path)
 {
     if (!m_model || path.isEmpty())
         return;
-    const QModelIndex index = m_model->indexForPath(path);
-    if (index.isValid())
-        m_model->refresh(index);
-    else if (path == m_model->homePath())
-        m_model->refresh(QModelIndex()); // 根目录本身没有 QModelIndex
+    // 拖拽/批量操作会连着触发很多次，合并成一次刷新
+    m_pendingRefreshPaths.insert(path);
+    if (!m_refreshTimer.isActive())
+        m_refreshTimer.start();
+}
+
+void FileTreePanel::flushRefresh()
+{
+    const QSet<QString> paths = m_pendingRefreshPaths;
+    m_pendingRefreshPaths.clear();
+    if (!m_model)
+        return;
+    for (const QString &path : paths) {
+        const QModelIndex index = m_model->indexForPath(path);
+        if (index.isValid())
+            m_model->refresh(index);
+        else if (path == m_model->homePath())
+            m_model->refresh(QModelIndex()); // 根目录本身没有 QModelIndex
+    }
+}
+
+QString FileTreePanel::dropTargetDir(const QPoint &pos) const
+{
+    if (!m_model)
+        return QString();
+    const QModelIndex index = m_view->indexAt(pos);
+    if (!index.isValid())
+        return currentDirectory();
+    const QString path = m_model->pathForIndex(index);
+    if (m_model->isDirIndex(index))
+        return path; // 落在文件夹上就传进这个文件夹
+    return QFileInfo(path).path();
+}
+
+void FileTreePanel::uploadLocalPath(const QString &local, const QString &remoteDir)
+{
+    const QFileInfo info(local);
+    const QString remote = remoteDir + QLatin1Char('/') + info.fileName();
+    if (!info.isDir()) {
+        enqueueStructural(SftpWorker::Op::Upload, info.absoluteFilePath(), remote);
+        return;
+    }
+    // 文件夹：先建远端目录，再把里面的东西排到队尾（worker 单线程 FIFO，顺序有保证）
+    enqueueStructural(SftpWorker::Op::Mkdir, remote);
+    const QFileInfoList children =
+        QDir(local).entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::NoSymLinks);
+    for (const QFileInfo &child : children)
+        uploadLocalPath(child.absoluteFilePath(), remote);
+}
+
+bool FileTreePanel::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched != m_view->viewport())
+        return QWidget::eventFilter(watched, event);
+
+    switch (event->type()) {
+    case QEvent::DragEnter:
+    case QEvent::DragMove: {
+        auto *dragEvent = static_cast<QDragMoveEvent *>(event);
+        const QString target = dropTargetDir(dragEvent->position().toPoint());
+        bool hasLocalFile = false;
+        for (const QUrl &url : dragEvent->mimeData()->urls()) {
+            if (url.isLocalFile() && QFileInfo::exists(url.toLocalFile())) {
+                hasLocalFile = true;
+                break;
+            }
+        }
+        if (!m_model || !m_worker || target.isEmpty() || !hasLocalFile) {
+            dragEvent->ignore();
+            return true;
+        }
+        if (event->type() == QEvent::DragEnter)
+            m_statusBeforeDrag = m_status->text();
+        setStatus(QStringLiteral("松开即可上传到 %1").arg(target));
+        dragEvent->setDropAction(Qt::CopyAction);
+        dragEvent->accept();
+        return true;
+    }
+    case QEvent::DragLeave:
+        if (!m_statusBeforeDrag.isEmpty())
+            setStatus(m_statusBeforeDrag);
+        m_statusBeforeDrag.clear();
+        return true;
+    case QEvent::Drop: {
+        auto *dropEvent = static_cast<QDropEvent *>(event);
+        const QString target = dropTargetDir(dropEvent->position().toPoint());
+        if (!m_model || !m_worker || target.isEmpty()) {
+            dropEvent->ignore();
+            return true;
+        }
+        int count = 0;
+        for (const QUrl &url : dropEvent->mimeData()->urls()) {
+            if (!url.isLocalFile())
+                continue;
+            const QString local = url.toLocalFile();
+            if (!QFileInfo::exists(local))
+                continue;
+            uploadLocalPath(local, target);
+            ++count;
+        }
+        if (count == 0) {
+            setStatus(QStringLiteral("拖进来的内容里没有可上传的本地文件"));
+            dropEvent->ignore();
+            return true;
+        }
+        setStatus(QStringLiteral("正在上传 %1 项到 %2 …").arg(count).arg(target));
+        dropEvent->setDropAction(Qt::CopyAction);
+        dropEvent->accept();
+        return true;
+    }
+    default:
+        break;
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void FileTreePanel::refreshCurrent()
@@ -280,8 +402,9 @@ void FileTreePanel::downloadSelection()
     if (dir.isEmpty())
         return;
     const QString local = dir + QLatin1Char('/') + m_model->nameForIndex(current);
-    const quint64 id = m_worker->enqueue(SftpWorker::Op::Download, remote, local);
-    m_pendingDownloads.insert(id, local);
+    // 明确“下载到…”的请求只落地，不自动打开：以前这里也登记到 m_openAfterDownload，
+    // 结果下载完就被 XDG 默认程序“打开”，系统弹“出于安全考虑不可执行此文件”
+    m_worker->enqueue(SftpWorker::Op::Download, remote, local);
     setStatus(isDir ? QStringLiteral("正在递归下载 %1 …").arg(m_model->nameForIndex(current))
                     : QStringLiteral("下载中…"));
 }
@@ -341,7 +464,7 @@ void FileTreePanel::openSelection()
     QDir().mkpath(cacheDir);
     const QString local = cacheDir + QLatin1Char('/') + m_model->nameForIndex(current);
     const quint64 id = m_worker->enqueue(SftpWorker::Op::Download, remote, local);
-    m_pendingDownloads.insert(id, local);
+    m_openAfterDownload.insert(id, local);
     setStatus(QStringLiteral("下载完成后自动打开…"));
 }
 
