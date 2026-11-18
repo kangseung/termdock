@@ -191,6 +191,14 @@ src/ui/             MainWindow、SessionPanel、SessionDialog、FileTreePanel、
 
 ---
 
+## 测试
+
+```bash
+ctest --test-dir build --output-on-failure   # 59 条单元测试（VT 内核 / 解析器 / 加密 / 会话 / 恢复 / 数据目录）
+./build/termdock --selftest                  # 64 条端到端自检（含网络无关的 PTY、输入法、关闭流程）
+./build/termdock --connect-test <host> --user <user>   # 真机 SSH/SFTP 联通测试（需 TERMDOCK_PASSWORD）
+```
+
 ## 已知限制
 
 - 不做 reflow：窗口变大只在下方加空白行、变小从底部裁剪（有内容的裁掉行进滚回），

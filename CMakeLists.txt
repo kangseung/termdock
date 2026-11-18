@@ -85,3 +85,19 @@ install(FILES assets/icons/termdock-16.png DESTINATION share/icons/hicolor/16x16
 install(FILES assets/icons/termdock-32.png DESTINATION share/icons/hicolor/32x32/apps RENAME termdock.png)
 install(FILES assets/icons/termdock-64.png DESTINATION share/icons/hicolor/64x64/apps RENAME termdock.png)
 install(FILES assets/icons/termdock-256.png DESTINATION share/icons/hicolor/256x256/apps RENAME termdock.png)
+
+# ---------------- 单元测试 ----------------
+enable_testing()
+
+add_executable(termdock-tests
+    tests/unit_tests.cpp
+    src/term/VtScreen.cpp
+    src/term/VtParser.cpp
+    src/session/Crypto.cpp
+    src/session/Recovery.cpp
+    src/session/Session.cpp
+    src/app/AppConfig.cpp
+)
+target_include_directories(termdock-tests PRIVATE src)
+target_link_libraries(termdock-tests PRIVATE Qt6::Gui Qt6::Core OpenSSL::Crypto)
+add_test(NAME termdock-tests COMMAND termdock-tests)
