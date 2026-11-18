@@ -26,6 +26,34 @@
 
 namespace termdock {
 
+namespace {
+
+QString formatBytes(qint64 bytes)
+{
+    if (bytes < 1024)
+        return QStringLiteral("%1 B").arg(bytes);
+    const double kb = bytes / 1024.0;
+    if (kb < 1024.0)
+        return QStringLiteral("%1 KB").arg(kb, 0, 'f', 1);
+    const double mb = kb / 1024.0;
+    if (mb < 1024.0)
+        return QStringLiteral("%1 MB").arg(mb, 0, 'f', 1);
+    return QStringLiteral("%1 GB").arg(mb / 1024.0, 0, 'f', 2);
+}
+
+QString formatDuration(qint64 seconds)
+{
+    if (seconds < 1)
+        return QStringLiteral("不到 1 秒");
+    if (seconds < 60)
+        return QStringLiteral("%1 秒").arg(seconds);
+    if (seconds < 3600)
+        return QStringLiteral("%1 分 %2 秒").arg(seconds / 60).arg(seconds % 60);
+    return QStringLiteral("%1 小时 %2 分").arg(seconds / 3600).arg((seconds % 3600) / 60);
+}
+
+} // namespace
+
 FileTreePanel::FileTreePanel(QWidget *parent)
     : QWidget(parent)
 {
@@ -108,14 +136,19 @@ void FileTreePanel::attach(SftpModel *model, SftpWorker *worker)
     }
     if (model && worker) {
         m_attached.append(connect(worker, &SftpWorker::progressed, this,
-                                  [this](quint64 id, qint64 done, qint64 total) {
+                                  [this](quint64 id, qint64 done, qint64 total, double speed) {
                                       Q_UNUSED(id);
-                                      if (total > 0) {
-                                          setStatus(QStringLiteral("传输中 %1 / %2 KB（%3%）")
-                                                        .arg(done / 1024)
-                                                        .arg(total / 1024)
-                                                        .arg(int(done * 100 / total)));
-                                      }
+                                      QString text = QStringLiteral("传输中 %1").arg(formatBytes(done));
+                                      if (total > 0)
+                                          text += QStringLiteral(" / %1（%2%）")
+                                                      .arg(formatBytes(total))
+                                                      .arg(int(done * 100 / total));
+                                      if (speed >= 1.0)
+                                          text += QStringLiteral(" · %1/s").arg(formatBytes(qint64(speed)));
+                                      if (total > done && speed >= 1.0)
+                                          text += QStringLiteral(" · 剩余 %1")
+                                                      .arg(formatDuration(qint64((total - done) / speed)));
+                                      setStatus(text);
                                   }));
         m_attached.append(connect(worker, &SftpWorker::succeeded, this,
                                   [this](quint64 id, const QString &message) {
@@ -402,6 +435,16 @@ void FileTreePanel::downloadSelection()
     if (dir.isEmpty())
         return;
     const QString local = dir + QLatin1Char('/') + m_model->nameForIndex(current);
+    if (QFileInfo::exists(local)) {
+        // 覆盖本地已有内容前必须问一声，免得默默盖掉用户的东西
+        const auto answer = QMessageBox::question(
+            this, QStringLiteral("已存在同名%1").arg(isDir ? QStringLiteral("文件夹") : QStringLiteral("文件")),
+            isDir ? QStringLiteral("本地已有文件夹 %1，继续会覆盖里面同名的文件。\n确定继续吗？").arg(local)
+                  : QStringLiteral("本地已有文件 %1，确定覆盖吗？").arg(local),
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+        if (answer != QMessageBox::Yes)
+            return;
+    }
     // 明确“下载到…”的请求只落地，不自动打开：以前这里也登记到 m_openAfterDownload，
     // 结果下载完就被 XDG 默认程序“打开”，系统弹“出于安全考虑不可执行此文件”
     m_worker->enqueue(SftpWorker::Op::Download, remote, local);

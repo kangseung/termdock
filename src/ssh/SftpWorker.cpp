@@ -3,6 +3,7 @@
 #include <libssh2_sftp.h>
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QMutexLocker>
@@ -14,6 +15,41 @@ struct SftpHandle {
     LIBSSH2_SESSION *session = nullptr;
     LIBSSH2_SFTP *sftp = nullptr;
 };
+
+namespace {
+
+// 传输进度节流：每 128KB 或每 200ms 报一次，同时给出平均速度（字节/秒）
+struct ProgressMeter {
+    QElapsedTimer timer;
+    qint64 lastBytes = 0;
+    qint64 lastMs = 0;
+
+    void start()
+    {
+        timer.start();
+        lastBytes = 0;
+        lastMs = 0;
+    }
+
+    bool shouldReport(qint64 done) const
+    {
+        return done - lastBytes >= 128 * 1024 || timer.elapsed() - lastMs >= 200;
+    }
+
+    void note(qint64 done)
+    {
+        lastBytes = done;
+        lastMs = timer.elapsed();
+    }
+
+    double speed(qint64 done) const
+    {
+        const double seconds = timer.elapsed() / 1000.0;
+        return seconds > 0.001 ? double(done) / seconds : 0.0;
+    }
+};
+
+} // namespace
 
 SftpWorker::SftpWorker(const SshParams &params, QObject *parent)
     : QThread(parent)
@@ -243,7 +279,8 @@ bool SftpWorker::downloadFile(SftpHandle *sftp, const Request &request)
 
     QByteArray buffer(32768, Qt::Uninitialized);
     qint64 done = 0;
-    qint64 lastReport = 0;
+    ProgressMeter meter;
+    meter.start();
     bool ok = true;
     while (true) {
         const ssize_t got = libssh2_sftp_read(file, buffer.data(), size_t(buffer.size()));
@@ -258,9 +295,9 @@ bool SftpWorker::downloadFile(SftpHandle *sftp, const Request &request)
             break;
         }
         done += got;
-        if (done - lastReport > 1024 * 1024) {
-            lastReport = done;
-            emit progressed(request.id, done, total);
+        if (meter.shouldReport(done)) {
+            meter.note(done);
+            emit progressed(request.id, done, total, meter.speed(done));
         }
     }
     libssh2_sftp_close_handle(file);
@@ -270,7 +307,7 @@ bool SftpWorker::downloadFile(SftpHandle *sftp, const Request &request)
         emit failedOp(request.id, QStringLiteral("下载 %1 失败：%2").arg(request.path, sftpError(sftp)));
         return false;
     }
-    emit progressed(request.id, done, total > 0 ? total : done);
+    emit progressed(request.id, done, total > 0 ? total : done, meter.speed(done));
     emit succeeded(request.id, QStringLiteral("已下载 %1 → %2").arg(request.path, info.absoluteFilePath()));
     return true;
 }
@@ -309,6 +346,8 @@ bool SftpWorker::downloadRecursive(SftpHandle *sftp, const QString &remote, cons
         }
         QByteArray buffer(32768, Qt::Uninitialized);
         qint64 done = 0;
+        ProgressMeter meter;
+        meter.start();
         bool ok = true;
         while (true) {
             const ssize_t got = libssh2_sftp_read(file, buffer.data(), size_t(buffer.size()));
@@ -319,7 +358,10 @@ bool SftpWorker::downloadRecursive(SftpHandle *sftp, const QString &remote, cons
                 break;
             }
             done += got;
-            emit progressed(request.id, done, entry.size);
+            if (meter.shouldReport(done)) {
+                meter.note(done);
+                emit progressed(request.id, done, entry.size, meter.speed(done));
+            }
         }
         libssh2_sftp_close_handle(file);
         localFile.close();
@@ -386,7 +428,8 @@ bool SftpWorker::uploadFile(SftpHandle *sftp, const Request &request)
 
     QByteArray buffer(32768, Qt::Uninitialized);
     qint64 done = 0;
-    qint64 lastReport = 0;
+    ProgressMeter meter;
+    meter.start();
     bool ok = true;
     while (!local.atEnd()) {
         const qint64 readBytes = local.read(buffer.data(), buffer.size());
@@ -404,9 +447,9 @@ bool SftpWorker::uploadFile(SftpHandle *sftp, const Request &request)
             }
             offset += written;
             done += written;
-            if (done - lastReport > 1024 * 1024) {
-                lastReport = done;
-                emit progressed(request.id, done, total);
+            if (meter.shouldReport(done)) {
+                meter.note(done);
+                emit progressed(request.id, done, total, meter.speed(done));
             }
         }
         if (!ok)
@@ -418,7 +461,7 @@ bool SftpWorker::uploadFile(SftpHandle *sftp, const Request &request)
         emit failedOp(request.id, QStringLiteral("上传 %1 失败：%2").arg(request.path, sftpError(sftp)));
         return false;
     }
-    emit progressed(request.id, done, total);
+    emit progressed(request.id, done, total, meter.speed(done));
     emit succeeded(request.id, QStringLiteral("已上传 %1 → %2").arg(request.path, request.path2));
     return true;
 }

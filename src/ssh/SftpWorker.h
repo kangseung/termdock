@@ -36,7 +36,7 @@ signals:
     void connected(const QString &homePath);
     void failed(const QString &message);
     void listed(quint64 id, const QString &path, const SftpEntryList &entries);
-    void progressed(quint64 id, qint64 done, qint64 total);
+    void progressed(quint64 id, qint64 done, qint64 total, double bytesPerSecond);
     void succeeded(quint64 id, const QString &message);
     void failedOp(quint64 id, const QString &message);
 
