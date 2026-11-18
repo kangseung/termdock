@@ -62,6 +62,8 @@ void SftpModel::setHomePath(const QString &path)
     deleteNode(m_root);
     m_pending.clear();
     m_prefetchPaths.clear();
+    m_probedDirs.clear();
+    m_emptyDirs.clear();
     m_root = new Node();
     m_root->entry.path = path;
     m_root->entry.name = QFileInfo(path).fileName();
@@ -122,21 +124,41 @@ void SftpModel::applyListing(const QString &path, const SftpEntryList &entries)
         if (parentIndex.isValid())
             emit dataChanged(parentIndex, parentIndex);
     }
+    // 记住哪些目录是空的：刷新后重新插进来的节点还没加载，靠这个集合照样不画箭头
+    if (nodes.isEmpty())
+        return;
+    if (entries.isEmpty())
+        m_emptyDirs.insert(path);
+    else
+        m_emptyDirs.remove(path);
     if (probeOnly)
         return;
-    // 列完之后顺带问一层子目录：这样在用户展开之前就知道哪些目录是空的，
-    // 空目录不会白画一个展开箭头（hasChildren 只认已加载/未加载，不认“空”）。
-    // 只探一层且限量，避免大目录把请求队列塞满。
+    // 列完之后顺带问一下它直接子目录的内容，好知道哪些是空的（空目录不该画箭头）
+    for (Node *node : nodes)
+        probeChildDirs(node);
+}
+
+void SftpModel::probeChildren(const QModelIndex &parent)
+{
+    probeChildDirs(nodeFromIndex(parent));
+}
+
+void SftpModel::probeChildDirs(Node *node)
+{
+    if (!node)
+        return;
+    // 只探一层，不往下串；展开一层探一层；已经探过的目录不再重复探，
+    // 刷新目录也不会把所有子目录重新探一遍。上限 64 个，免得超大目录把队列塞满。
     int budget = 64;
-    for (Node *node : nodes) {
-        for (Node *child : node->children) {
-            if (budget <= 0)
-                return;
-            if (!child->entry.isDir || child->fetched)
-                continue;
-            --budget;
-            requestListing(child, true);
-        }
+    for (Node *child : node->children) {
+        if (budget <= 0)
+            return;
+        const QString &childPath = child->entry.path;
+        if (!child->entry.isDir || child->fetched || m_probedDirs.contains(childPath))
+            continue;
+        --budget;
+        m_probedDirs.insert(childPath);
+        requestListing(child, true);
     }
 }
 
@@ -302,8 +324,8 @@ bool SftpModel::hasChildren(const QModelIndex &parent) const
         return true;
     // 还没展开过、内容未知的目录也算“有子项”：QTreeView 只根据 hasChildren
     // 决定画不画展开箭头（canFetchMore 不算），不这么写用户看不出哪些目录能展开。
-    // 展开过且确实为空（fetched 且无子项）就不再画箭头。
-    return node->entry.isDir && !node->fetched;
+    // 探过且确认为空的目录（哪怕刷新后重新插入、尚未加载）也不再画箭头。
+    return node->entry.isDir && !node->fetched && !m_emptyDirs.contains(node->entry.path);
 }
 
 Qt::ItemFlags SftpModel::flags(const QModelIndex &index) const

@@ -33,6 +33,8 @@ public:
     bool isDirIndex(const QModelIndex &index) const;
     QModelIndex indexForPath(const QString &path) const;
 
+    // 展开某个目录时调用：探一下它直接子目录的内容（只一层，已探过的不重复）
+    void probeChildren(const QModelIndex &parent);
     void applyListing(const QString &path, const SftpEntryList &entries);
     void markLoadingFailed(const QString &path);
     void refresh(const QModelIndex &index = QModelIndex());
@@ -68,11 +70,14 @@ private:
     void deleteNode(Node *node);
     // prefetch = true 时为“探路”请求：结果照样存进节点，但不再继续往下探
     void requestListing(Node *node, bool prefetch = false);
+    void probeChildDirs(Node *node);
     void collectPath(Node *node, const QString &path, QVector<Node *> *out) const;
 
     Node *m_root = nullptr;
     QHash<QString, QVector<Node *>> m_pending;
     QSet<QString> m_prefetchPaths;
+    QSet<QString> m_probedDirs;  // 已经探过路的目录，避免重复探测
+    QSet<QString> m_emptyDirs;   // 已确认是空的目录（刷新后也不画展开箭头）
 };
 
 } // namespace termdock

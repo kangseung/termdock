@@ -104,6 +104,11 @@ void FileTreePanel::setupUi()
     layout->addWidget(m_status);
 
     connect(m_view, &QTreeView::doubleClicked, this, &FileTreePanel::openSelection);
+    // 每展开一层就探一下这层的子目录内容：这样空目录不会白带一个展开箭头
+    connect(m_view, &QTreeView::expanded, this, [this](const QModelIndex &index) {
+        if (m_model)
+            m_model->probeChildren(index);
+    });
     connect(m_view, &QWidget::customContextMenuRequested, this, &FileTreePanel::showContextMenu);
     // 选择模型要等 setModel 之后才存在，相关信号在 attach() 里连接
 
