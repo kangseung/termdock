@@ -58,16 +58,22 @@ QFont Theme::terminalFont() const
     QFont font;
     if (m_fontFamily.isEmpty()) {
         // 拉丁字符用等宽字体，汉字交给 CJK 字体兜底（汉字天然占两格）。
-        // 顺序按平台分布排：Windows 只有 Cascadia/Consolas/雅黑，Linux 才有前面那批。
-        font.setFamilies(QStringList{QStringLiteral("JetBrainsMono NFM"),
-                                     QStringLiteral("JetBrains Mono"),
-                                     QStringLiteral("Cascadia Mono"),
+        // 按平台分开列：Windows 上没有 JetBrains/DejaVu，Linux 上也没有 Cascadia/Consolas。
+        // 混在一个列表里会改变 Linux 的既有选择（装了 Cascadia 的用户等宽字体就被换掉），
+        // 所以这里用条件编译而不是拼接。
+#ifdef _WIN32
+        font.setFamilies(QStringList{QStringLiteral("Cascadia Mono"),
                                      QStringLiteral("Consolas"),
-                                     QStringLiteral("DejaVu Sans Mono"),
                                      QStringLiteral("Noto Sans CJK SC"),
                                      QStringLiteral("Noto Sans Mono CJK SC"),
-                                     QStringLiteral("Microsoft YaHei UI"),
-                                     QStringLiteral("Sarasa Mono SC")});
+                                     QStringLiteral("Microsoft YaHei UI")});
+#else
+        font.setFamilies(QStringList{QStringLiteral("JetBrainsMono NFM"),
+                                     QStringLiteral("JetBrains Mono"),
+                                     QStringLiteral("DejaVu Sans Mono"),
+                                     QStringLiteral("Noto Sans CJK SC"),
+                                     QStringLiteral("Noto Sans Mono CJK SC")});
+#endif
     } else {
         font.setFamily(m_fontFamily);
     }
@@ -103,7 +109,9 @@ QString Theme::styleSheet() const
 QWidget {
     background: #19232D;
     color: #DFE4EA;
-    font-family: "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei UI", "Segoe UI", "Helvetica Neue", sans-serif;
+    /* Windows 字体放在 Linux 后面：Linux 上 "Noto Sans CJK SC" 基本总能命中，
+       追加不会改变现有观感；反过来把雅黑放前面会把 Linux 字体抢走。 */
+    font-family: "Noto Sans CJK SC", "Source Han Sans SC", "Helvetica Neue", "Microsoft YaHei UI", "Segoe UI", sans-serif;
     font-size: 13px;
     selection-background-color: #148CD2;
     selection-color: #FFFFFF;
