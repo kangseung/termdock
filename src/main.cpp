@@ -304,6 +304,27 @@ int runSelfTest()
                    AppConfig::configDir());
         test.check(!QIcon(QStringLiteral(":/icons/termdock-256.png")).isNull(),
                    QStringLiteral("内置应用图标可加载"));
+
+        // 输入法（fcitx5 中文）提交路径：QInputMethodEvent 的 commitString 要原样送到 PTY
+        if (QGuiApplication::platformName() != QLatin1String("offscreen")) {
+            test.check(true, QStringLiteral("输入法提交（需要窗口平台，已跳过）"));
+        } else {
+            TerminalWidget widget;
+            widget.setConnected(true);
+            QByteArray sent;
+            QObject::connect(&widget, &TerminalWidget::dataToSend,
+                             [&sent](const QByteArray &d) { sent += d; });
+            QInputMethodEvent commit;
+            commit.setCommitString(QStringLiteral("你好"));
+            QCoreApplication::sendEvent(&widget, &commit);
+            test.check(sent == QStringLiteral("你好").toUtf8(),
+                       QStringLiteral("输入法提交串按 UTF-8 送到 PTY"),
+                       QString::fromUtf8(sent.toHex()));
+            QInputMethodEvent preedit(QStringLiteral("nihao"), {});
+            QCoreApplication::sendEvent(&widget, &preedit);
+            test.check(sent == QStringLiteral("你好").toUtf8(),
+                       QStringLiteral("预编辑阶段不发送任何字节"));
+        }
         test.check(AppConfig::sessionsFile().endsWith(QStringLiteral("sessions.json")),
                    QStringLiteral("会话文件路径"));
 
@@ -600,6 +621,28 @@ int main(int argc, char *argv[])
         }
     }
 
+#ifdef Q_OS_LINUX
+    // 官方安装版 Qt（如 ~/Qt/6.8.2/gcc_64）的插件搜索路径只有它自己那份，
+    // 系统里的 fcitx5 输入法插件在 /usr/lib/.../qt6/plugins，不补进来就永远打不了中文。
+    {
+        const QStringList candidates{
+            QStringLiteral("/usr/lib/x86_64-linux-gnu/qt6/plugins"),
+            QStringLiteral("/usr/lib/aarch64-linux-gnu/qt6/plugins"),
+            QStringLiteral("/usr/lib64/qt6/plugins"),
+            QStringLiteral("/usr/lib/qt6/plugins"),
+            QStringLiteral("/usr/local/lib/qt6/plugins"),
+        };
+        QStringList paths = qEnvironmentVariable("QT_PLUGIN_PATH")
+                                .split(QLatin1Char(':'), Qt::SkipEmptyParts);
+        for (const QString &dir : candidates) {
+            if (QDir(dir).exists() && !paths.contains(dir))
+                paths.append(dir);
+        }
+        if (!paths.isEmpty())
+            qputenv("QT_PLUGIN_PATH", paths.join(QLatin1Char(':')).toUtf8());
+    }
+#endif
+
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("termdock"));
     QApplication::setApplicationVersion(QStringLiteral("0.1.0"));
@@ -694,6 +737,9 @@ int main(int argc, char *argv[])
     }
 
     MainWindow window;
+    // 自动截图/脚本化场景不需要人工确认，避免卡在对话框上
+    window.setConfirmClose(!parser.isSet(screenshotOption)
+                           && qEnvironmentVariableIsEmpty("TERMDOCK_NO_CONFIRM"));
     window.show();
 
     if (parser.isSet(connectOption)) {

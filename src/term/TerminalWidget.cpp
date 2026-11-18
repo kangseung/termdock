@@ -4,6 +4,8 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QGuiApplication>
+#include <QInputMethod>
 #include <QContextMenuEvent>
 #include <QFontMetricsF>
 #include <QInputMethodEvent>
@@ -27,7 +29,9 @@ TerminalWidget::TerminalWidget(QWidget *parent)
     : QWidget(parent)
     , m_parser(&m_screen)
 {
-    setAttribute(Qt::WA_OpaquePaintEvent);
+    // 不开 WA_OpaquePaintEvent：125%/150% 这类分数缩放下，Qt 的后备缓冲按设备像素
+    // 对齐，未标记重绘的区域会留着上一帧（看起来就是"错位/重复/卡贴图"）。
+    setAttribute(Qt::WA_StaticContents, false);
     setAttribute(Qt::WA_InputMethodEnabled, true);
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
@@ -70,7 +74,11 @@ void TerminalWidget::updateMetrics()
     m_cellH = std::ceil(fm.lineSpacing()) + 2;
     m_ascent = fm.ascent();
     m_descent = fm.descent();
-    m_baseline = (m_cellH - (m_ascent + m_descent)) / 2.0 + m_ascent;
+    // 分数缩放（1.25 / 1.5）下把格宽、行高吸附到设备像素，避免每个字符半像素错位
+    const qreal dpr = devicePixelRatioF() > 0 ? devicePixelRatioF() : 1.0;
+    m_cellW = std::round(m_cellW * dpr) / dpr;
+    m_cellH = std::round(m_cellH * dpr) / dpr;
+    m_baseline = std::round((m_cellH - (m_ascent + m_descent)) / 2.0 + m_ascent) / dpr * dpr;
 }
 
 void TerminalWidget::applyFont()
@@ -89,7 +97,9 @@ void TerminalWidget::recomputeGrid()
     const int rows = std::max(kMinRows, int(usableH / m_cellH));
     if (cols != m_screen.cols() || rows != m_screen.rows()) {
         m_screen.resize(cols, rows);
+        m_preedit.clear();
         emit gridResized(cols, rows);
+        update();
     }
 }
 
@@ -97,6 +107,9 @@ void TerminalWidget::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
     recomputeGrid();
+    // 必须整窗重绘：WA_OpaquePaintEvent 下 Qt 不会自动清背景，
+    // 只补暴露区域会把旧尺寸的画面留在原地，表现就是放大/最大化后错位、重复、卡贴图。
+    update();
 }
 
 void TerminalWidget::feed(const QByteArray &data)
@@ -294,7 +307,15 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
     Q_UNUSED(event);
     const Theme &theme = Theme::instance();
     QPainter p(this);
+    // 强行把剪辑区扩到整个控件：WA_OpaquePaintEvent 下如果只按 Qt 给的脏区绘制，
+    // 缩放/最大化后未被标记的旧画面会留下来（错位、重复、卡贴图）。
+    p.setClipRect(rect(), Qt::ReplaceClip);
     p.fillRect(rect(), theme.background());
+    // 所有格点坐标吸附到设备像素：分数缩放下否则会出现"重影/贴图错位"
+    const qreal dpr = devicePixelRatioF() > 0 ? devicePixelRatioF() : 1.0;
+    const auto snap = [dpr](qreal v) { return std::round(v * dpr) / dpr; };
+    const qreal padX = snap(m_padX);
+    const qreal padY = snap(m_padY);
     p.setRenderHint(QPainter::TextAntialiasing, true);
     p.setRenderHint(QPainter::Antialiasing, true);
 
@@ -314,8 +335,8 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
 
     for (int row = 0; row < rows; ++row) {
         const int absLine = m_screen.absoluteLineOf(row);
-        const qreal y = m_padY + row * m_cellH;
-        const qreal baseY = y + m_baseline; // 每行自己的基线
+        const qreal y = padY + row * m_cellH;
+        const qreal baseY = snap(y + m_baseline); // 每行自己的基线，吸附到设备像素
 
         int col = 0;
         while (col < cols) {
@@ -355,7 +376,7 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
                 end += (next.attr & AttrWide) ? 2 : 1;
             }
 
-            const qreal x = std::round(m_padX + col * m_cellW);
+            const qreal x = snap(padX + col * m_cellW);
             const qreal w = (end - col) * m_cellW;
             if (bg != theme.background())
                 p.fillRect(QRectF(x, y, w, m_cellH), bg);
@@ -365,7 +386,7 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
                 const int from = std::max(col, (absLine == selSl) ? selSc : 0);
                 const int to = std::min(end - 1, (absLine == selEl) ? selEc : cols - 1);
                 if (to >= from) {
-                    p.fillRect(QRectF(std::round(m_padX + from * m_cellW), y,
+                    p.fillRect(QRectF(snap(padX + from * m_cellW), y,
                                       (to - from + 1) * m_cellW, m_cellH),
                                theme.selection());
                 }
@@ -381,7 +402,7 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
                     const VtCell &cc = m_screen.cellAtAbsolute(absLine, c);
                     if (cc.ch == 0 || cc.ch == U' ')
                         continue;
-                    p.drawText(QPointF(std::round(m_padX + c * m_cellW), baseY),
+                    p.drawText(QPointF(snap(padX + c * m_cellW), baseY),
                                QString::fromUcs4(&cc.ch, 1));
                 }
                 if (cell.attr & AttrUnderline) {
@@ -401,8 +422,8 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
     const bool showCursor = m_connected && m_hasFocus && m_screen.cursorVisible()
         && m_screen.scrollOffset() == 0 && m_blinkOn;
     if (showCursor) {
-        const qreal x = m_padX + m_screen.cursorCol() * m_cellW;
-        const qreal y = m_padY + m_screen.cursorRow() * m_cellH;
+        const qreal x = snap(padX + m_screen.cursorCol() * m_cellW);
+        const qreal y = snap(padY + m_screen.cursorRow() * m_cellH);
         const VtCell &cell = m_screen.cellAtAbsolute(m_screen.absoluteLineOf(m_screen.cursorRow()),
                                                     m_screen.cursorCol());
         QColor cursorColor = theme.cursor();
@@ -420,8 +441,8 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
 
     // 输入法预编辑
     if (!m_preedit.isEmpty() && m_connected) {
-        const qreal x = m_padX + m_screen.cursorCol() * m_cellW;
-        const qreal y = m_padY + m_screen.cursorRow() * m_cellH;
+        const qreal x = snap(padX + m_screen.cursorCol() * m_cellW);
+        const qreal y = snap(padY + m_screen.cursorRow() * m_cellH);
         const QFontMetricsF fm(m_font);
         const qreal w = fm.horizontalAdvance(m_preedit) + 6;
         p.setPen(Qt::NoPen);
@@ -638,13 +659,26 @@ void TerminalWidget::inputMethodEvent(QInputMethodEvent *event)
 
 QVariant TerminalWidget::inputMethodQuery(Qt::InputMethodQuery query) const
 {
-    if (query == Qt::ImCursorRectangle) {
-        const QRect r(int(m_padX + m_screen.cursorCol() * m_cellW),
-                      int(m_padY + m_screen.cursorRow() * m_cellH), int(m_cellW), int(m_cellH));
-        return r;
+    const QRect cursorRect(int(m_padX + m_screen.cursorCol() * m_cellW),
+                           int(m_padY + m_screen.cursorRow() * m_cellH), int(m_cellW), int(m_cellH));
+    switch (query) {
+    case Qt::ImCursorRectangle:
+    case Qt::ImAnchorRectangle:
+    case Qt::ImCursorPosition:
+        return query == Qt::ImCursorPosition ? QVariant(0) : QVariant(cursorRect);
+    case Qt::ImEnabled:
+        return m_connected && isVisible();
+    case Qt::ImReadOnly:
+        return false;
+    case Qt::ImHints:
+        return int(Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase);
+    case Qt::ImSurroundingText:
+        return QString();
+    case Qt::ImCurrentSelection:
+        return QString();
+    default:
+        break;
     }
-    if (query == Qt::ImEnabled)
-        return m_connected;
     return QWidget::inputMethodQuery(query);
 }
 
@@ -883,6 +917,12 @@ void TerminalWidget::focusInEvent(QFocusEvent *event)
 {
     QWidget::focusInEvent(event);
     m_hasFocus = true;
+    // 告诉输入法框架（fcitx5 / ibus）这个控件现在可以输入，并把光标位置给它，
+    // 否则中文候选框不知道在哪、甚至根本不激活。
+    if (QGuiApplication::inputMethod()) {
+        QGuiApplication::inputMethod()->update(Qt::ImQueryAll);
+        QGuiApplication::inputMethod()->setVisible(m_connected);
+    }
     update();
 }
 

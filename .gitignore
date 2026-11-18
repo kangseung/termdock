@@ -15,3 +15,11 @@ compile_commands.json
 *~
 *.log
 /dist/
+
+# 运行期数据：里面有加密后的会话、主密钥、主机指纹，绝不入库
+termdock-data/
+sessions.json
+recovery.json
+known_hosts.json
+/key
+*.log

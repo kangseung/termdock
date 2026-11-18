@@ -430,6 +430,8 @@ void MainWindow::openSession(const Session &session)
 
 void MainWindow::onShellConnected(Page *page, const QString &fingerprint, const QString &hostKeyType)
 {
+    if (!m_pages.contains(page))
+        return;
     page->shellConnected = true;
     page->fingerprint = fingerprint;
     page->terminal->setConnected(true);
@@ -460,6 +462,8 @@ void MainWindow::onShellConnected(Page *page, const QString &fingerprint, const 
 
 void MainWindow::onShellFailed(Page *page, const QString &message)
 {
+    if (!m_pages.contains(page))
+        return;
     page->shellConnected = false;
     page->terminal->setConnected(false);
     page->terminal->setStatusText(QStringLiteral("连接失败：%1").arg(message));
@@ -468,6 +472,8 @@ void MainWindow::onShellFailed(Page *page, const QString &message)
 
 void MainWindow::onShellClosed(Page *page, const QString &reason)
 {
+    if (!m_pages.contains(page))
+        return;
     page->shellConnected = false;
     page->terminal->setConnected(false);
     page->terminal->setStatusText(QStringLiteral("连接已断开：%1").arg(reason));
@@ -489,22 +495,57 @@ void MainWindow::updateTabTitle(Page *page)
     m_tabs->setTabToolTip(index, page->session.displaySubtitle());
 }
 
+void MainWindow::setConfirmClose(bool on)
+{
+    m_confirmClose = on;
+}
+
+void MainWindow::teardownPage(Page *page)
+{
+    if (!page)
+        return;
+    // 先断信号：停线程/删对象期间 shell 仍可能发 closed/failed，
+    // 回调里拿着已经 delete 掉的 Page 用就是段错误（表现为"叉掉标签整个程序退出"）。
+    if (page->shell) {
+        QObject::disconnect(page->shell, nullptr, this, nullptr);
+        page->shell->stop();
+    }
+    if (page->sftp) {
+        QObject::disconnect(page->sftp, nullptr, this, nullptr);
+        page->sftp->stop();
+    }
+    if (page->terminal) {
+        QObject::disconnect(page->terminal, nullptr, this, nullptr);
+        QObject::disconnect(page->terminal, nullptr, page->shell, nullptr);
+    }
+    if (page->model)
+        QObject::disconnect(page->model, nullptr, this, nullptr);
+}
+
 void MainWindow::closePage(int tabIndex)
 {
     if (tabIndex < 0 || tabIndex >= m_pages.size())
         return;
     Page *page = m_pages.at(tabIndex);
+    if (m_confirmClose) {
+        const QString name = m_tabs->tabText(tabIndex);
+        const auto answer = QMessageBox::question(
+            this, QStringLiteral("关闭标签页"),
+            QStringLiteral("确定关闭「%1」？\n该会话的连接会被断开。").arg(name),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes)
+            return;
+    }
     m_pages.removeAt(tabIndex);
     m_tabs->removeTab(tabIndex);
     updateTabPlaceholder();
 
+    teardownPage(page);
     if (page->shell) {
-        page->shell->stop();
         page->shell->wait(3000);
         page->shell->deleteLater();
     }
     if (page->sftp) {
-        page->sftp->stop();
         page->sftp->wait(3000);
         page->sftp->deleteLater();
     }
@@ -611,14 +652,32 @@ void MainWindow::persistUiState()
     settings.setValue(QStringLiteral("terminal/fontFamily"), Theme::instance().terminalFontFamily());
 }
 
+void MainWindow::confirmQuit()
+{
+    const QString detail = m_pages.isEmpty()
+        ? QStringLiteral("确定退出 termdock？")
+        : QStringLiteral("确定退出 termdock？\n当前有 %1 个会话，退出后会断开连接。")
+              .arg(m_pages.size());
+    if (QMessageBox::question(this, QStringLiteral("退出 termdock"), detail,
+                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+        != QMessageBox::Yes)
+        return;
+    m_quitConfirmed = true;
+    close();
+}
+
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-    for (Page *page : m_pages) {
-        if (page->shell)
-            page->shell->stop();
-        if (page->sftp)
-            page->sftp->stop();
+    if (m_confirmClose && !m_quitConfirmed) {
+        // 关键：不要在 closeEvent 里直接 exec 模态框——有些窗口管理器会把
+        // 关闭事件和模态循环搅在一起（对话框不显示 / 卡死）。先拒绝关闭，
+        // 下一轮事件循环再问；确认后带着标记重新 close()。
+        event->ignore();
+        QTimer::singleShot(0, this, &MainWindow::confirmQuit);
+        return;
     }
+    for (Page *page : m_pages)
+        teardownPage(page);
     QSettings settings;
     settings.setValue(QStringLiteral("ui/geometry"), saveGeometry());
     settings.setValue(QStringLiteral("ui/splitter"), m_splitter->saveState());

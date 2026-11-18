@@ -35,6 +35,8 @@ public:
 
     TerminalWidget *currentTerminal() const;
     void adjustFontSize(int delta);
+    // 关闭标签/退出程序时是否弹确认框（自动截图、脚本化测试时关掉）
+    void setConfirmClose(bool on);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -71,6 +73,9 @@ private:
     void persistUiState();
 
     Page *currentPage() const;
+    // 关闭页面前先断信号、停线程，避免回调摸到已释放的 Page
+    void teardownPage(Page *page);
+    void confirmQuit();
     Page *findPageBySessionId(const QString &id) const;
     int pageIndexOf(const Page *page) const;
     Session *findSession(const QString &id);
@@ -81,6 +86,8 @@ private:
     QStackedWidget *m_tabStack = nullptr;
     QSplitter *m_splitter = nullptr;
     QLabel *m_statusInfo = nullptr;
+    bool m_confirmClose = true;
+    bool m_quitConfirmed = false;
     QAction *m_showSessionPanelAction = nullptr;
     QAction *m_showFilePanelAction = nullptr;
     QVector<Page *> m_pages;
