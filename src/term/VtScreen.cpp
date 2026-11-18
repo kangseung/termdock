@@ -63,8 +63,12 @@ void VtScreen::resize(int cols, int rows)
 
     const int oldRows = m_rows;
     for (Buffer *buf : {&m_primary, &m_alt}) {
-        for (auto &line : buf->lines)
-            line.cells.resize(size_t(cols));
+        // 变窄时不要把右侧字符丢掉：先留着，变宽时还能原样显示回来
+        // （以前直接截断，缩放一圈之后 MOTD 之类的长行就永久缺了右半截）
+        for (auto &line : buf->lines) {
+            if (line.cells.size() < size_t(cols))
+                line.cells.resize(size_t(cols), VtCell());
+        }
 
         if (rows > oldRows) {
             // 变大：只在下面加空白行。内容位置一动不动，
@@ -90,8 +94,10 @@ void VtScreen::resize(int cols, int rows)
             }
         }
         buf->lines.resize(size_t(rows));
-        for (auto &line : buf->lines)
-            line.cells.resize(size_t(cols), VtCell());
+        for (auto &line : buf->lines) {
+            if (line.cells.size() < size_t(cols))
+                line.cells.resize(size_t(cols), VtCell());
+        }
     }
 
     m_cols = cols;

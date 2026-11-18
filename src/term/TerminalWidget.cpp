@@ -90,6 +90,10 @@ void TerminalWidget::applyFont()
 
 void TerminalWidget::recomputeGrid()
 {
+    // 还没完成布局（刚 addTab / 刚 show）时尺寸是不可信的（曾出现过 20x5），
+    // 拿它去设 PTY 会让远端的 MOTD 按错误宽度排版、右侧内容被截断。
+    if (width() < 200 || height() < 120)
+        return;
     // 右侧留 10px 给滚动条，避免最后一列被滚动条压住
     const int usableW = std::max(1, width() - 2 * m_padX - 10);
     const int usableH = std::max(1, height() - 2 * m_padY);

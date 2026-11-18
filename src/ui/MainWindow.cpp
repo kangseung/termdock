@@ -423,8 +423,17 @@ void MainWindow::openSession(const Session &session)
             m_filePanel->setStatus(QStringLiteral("SFTP 不可用：%1").arg(message));
     });
 
-    page->shell->start();
-    page->sftp->start();
+    // 等这一轮布局结束再建连接：新建标签时终端还没拿到最终尺寸，
+    // 用临时尺寸建 PTY 会让远端按错误列宽生成 MOTD（右侧被截断）。
+    Page *startPage = page;
+    QTimer::singleShot(0, this, [this, startPage]() {
+        if (!m_pages.contains(startPage) || !startPage->shell)
+            return;
+        startPage->shell->resizePty(startPage->terminal->screen()->cols(),
+                                    startPage->terminal->screen()->rows());
+        startPage->shell->start();
+        startPage->sftp->start();
+    });
     updateStatusBar();
 }
 
