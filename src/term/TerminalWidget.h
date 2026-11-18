@@ -47,6 +47,8 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void inputMethodEvent(QInputMethodEvent *event) override;
+    // Tab 必须留给远端 shell 做补全，不能被 Qt 拿去切焦点
+    bool focusNextPrevChild(bool next) override;
     QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;

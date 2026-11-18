@@ -57,6 +57,8 @@
     `QT_PLUGIN_PATH`（官方安装版 Qt 默认只扫自己那份），预编辑串就地显示
 - 快捷键：
   - `Ctrl+Shift+C` / `Ctrl+Shift+V` 复制 / 粘贴（`Ctrl+C` 仍是 SIGINT）
+  - **`Tab` / `Shift+Tab` 原样交给远端 shell**（`cd Doc<Tab>` 就能补全，和普通终端一样），
+    所以切标签用 `Ctrl+Tab` / `Ctrl+Shift+Tab`（或 `Ctrl+PgDn` / `Ctrl+PgUp`）
   - `Ctrl+N` 新建会话；`Ctrl+W` 关闭当前标签（**会弹确认框**）
   - `Ctrl+Shift+K` 打开「安全密钥与已保存的密码」
   - `Ctrl+=` / `Ctrl+-` / `Ctrl+0` 放大 / 缩小 / 重置字号；`Ctrl+滚轮` 同样可调

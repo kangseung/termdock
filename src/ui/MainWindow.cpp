@@ -153,6 +153,30 @@ void MainWindow::setupActions()
     });
 
     fileMenu->addSeparator();
+    // Tab 现在全给远端 shell 了（补全），键盘切标签改用 Ctrl+Tab / Ctrl+PgDn
+    auto *nextTabAction = new QAction(this);
+    nextTabAction->setShortcuts({QKeySequence(QStringLiteral("Ctrl+Tab")),
+                                 QKeySequence(QStringLiteral("Ctrl+PgDown"))});
+    nextTabAction->setShortcutContext(Qt::WindowShortcut);
+    connect(nextTabAction, &QAction::triggered, this, [this]() {
+        if (m_tabs->count() < 2)
+            return;
+        m_tabs->setCurrentIndex((m_tabs->currentIndex() + 1) % m_tabs->count());
+    });
+    addAction(nextTabAction);
+    auto *prevTabAction = new QAction(this);
+    prevTabAction->setShortcuts({QKeySequence(QStringLiteral("Ctrl+Shift+Tab")),
+                                 QKeySequence(QStringLiteral("Ctrl+PgUp"))});
+    prevTabAction->setShortcutContext(Qt::WindowShortcut);
+    connect(prevTabAction, &QAction::triggered, this, [this]() {
+        if (m_tabs->count() < 2)
+            return;
+        const int count = m_tabs->count();
+        m_tabs->setCurrentIndex((m_tabs->currentIndex() - 1 + count) % count);
+    });
+    addAction(prevTabAction);
+
+    fileMenu->addSeparator();
     auto *quitAction = fileMenu->addAction(QStringLiteral("退出"));
     quitAction->setShortcut(QKeySequence::Quit);
     connect(quitAction, &QAction::triggered, this, &QWidget::close);

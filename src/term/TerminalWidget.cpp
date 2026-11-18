@@ -649,6 +649,16 @@ void TerminalWidget::keyPressEvent(QKeyEvent *event)
         sendBytes(text.toUtf8());
 }
 
+bool TerminalWidget::focusNextPrevChild(bool next)
+{
+    // Qt 在把 Tab 交给 keyPressEvent 之前，会先试 focusNextPrevChild()；
+    // 返回 true 就把 Tab 当成“切换焦点”吃掉了（远端 shell 根本收不到 \t，
+    // 于是 cd <Tab> 永远补全不了）。终端里 Tab/Shift+Tab 属于 shell：
+    // 正向按 cd/dir 补全，Shift+Tab 发 ESC[Z 做反向补全。
+    Q_UNUSED(next);
+    return false;
+}
+
 void TerminalWidget::inputMethodEvent(QInputMethodEvent *event)
 {
     if (event->commitString().isEmpty()) {
