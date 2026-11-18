@@ -51,6 +51,9 @@ void FileTreePanel::setupUi()
     m_view = new QTreeView(this);
     m_view->setUniformRowHeights(true);
     m_view->setAnimated(false);
+    // 双击展开由 openSelection() 自己处理：视图默认也会在双击时展开，
+    // 两个动作叠加的结果是展开后立刻被收回去（双击永远打不开文件夹）
+    m_view->setExpandsOnDoubleClick(false);
     m_view->setAlternatingRowColors(false);
     m_view->setSelectionMode(QAbstractItemView::SingleSelection);
     m_view->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -106,15 +109,11 @@ void FileTreePanel::attach(SftpModel *model, SftpWorker *worker)
             const QString localPath = m_pendingDownloads.take(id);
             if (!localPath.isEmpty())
                 QDesktopServices::openUrl(QUrl::fromLocalFile(localPath));
-            // 结构变化后自动刷新当前目录，省得用户手动点刷新
-            if (message.contains(QStringLiteral("已创建")) || message.contains(QStringLiteral("已删除"))
-                || message.contains(QStringLiteral("已重命名"))) {
-                const QModelIndex dir = currentDirectoryIndex();
-                if (dir.isValid())
-                    m_model->refresh(dir);
-                else
-                    m_model->refresh(QModelIndex());
-            }
+            // 结构变化后自动刷新受影响目录，省得用户手动点刷新。
+            // 必须刷父目录：被改名/删除的条目自己已经不在服务器上了，去列它会报 SFTP 错误。
+            const QString dirPath = m_refreshDirs.take(id);
+            if (!dirPath.isEmpty())
+                refreshDirPath(dirPath);
         });
         connect(worker, &SftpWorker::failedOp, this, [this](quint64, const QString &message) {
             setStatus(message);
@@ -130,6 +129,7 @@ void FileTreePanel::detach()
     m_model = nullptr;
     m_worker = nullptr;
     m_pendingDownloads.clear();
+    m_refreshDirs.clear();
     setStatus(QStringLiteral("未连接"));
     updatePathLabel();
 }
@@ -181,6 +181,27 @@ void FileTreePanel::updatePathLabel()
     m_pathLabel->setToolTip(dir);
 }
 
+quint64 FileTreePanel::enqueueStructural(SftpWorker::Op op, const QString &path, const QString &path2)
+{
+    const quint64 id = m_worker->enqueue(op, path, path2);
+    // 结构变化发生在远端目标所在的目录里，操作完成后刷那个目录。
+    // 上传时 path 是本地文件、path2 才是远端目标。
+    const QString &remotePath = (op == SftpWorker::Op::Upload) ? path2 : path;
+    m_refreshDirs.insert(id, QFileInfo(remotePath).path());
+    return id;
+}
+
+void FileTreePanel::refreshDirPath(const QString &path)
+{
+    if (!m_model || path.isEmpty())
+        return;
+    const QModelIndex index = m_model->indexForPath(path);
+    if (index.isValid())
+        m_model->refresh(index);
+    else if (path == m_model->homePath())
+        m_model->refresh(QModelIndex()); // 根目录本身没有 QModelIndex
+}
+
 void FileTreePanel::refreshCurrent()
 {
     if (!m_model)
@@ -204,7 +225,7 @@ void FileTreePanel::makeDirectory()
                                                QString(), &ok);
     if (!ok || name.trimmed().isEmpty())
         return;
-    m_worker->enqueue(SftpWorker::Op::Mkdir, base + QLatin1Char('/') + name.trimmed());
+    enqueueStructural(SftpWorker::Op::Mkdir, base + QLatin1Char('/') + name.trimmed());
     setStatus(QStringLiteral("正在创建文件夹 %1 …").arg(name.trimmed()));
 }
 
@@ -219,7 +240,7 @@ void FileTreePanel::makeFile()
                                                QLineEdit::Normal, QString(), &ok);
     if (!ok || name.trimmed().isEmpty())
         return;
-    m_worker->enqueue(SftpWorker::Op::CreateFile, base + QLatin1Char('/') + name.trimmed());
+    enqueueStructural(SftpWorker::Op::CreateFile, base + QLatin1Char('/') + name.trimmed());
     setStatus(QStringLiteral("正在创建文件 %1 …").arg(name.trimmed()));
 }
 
@@ -231,7 +252,7 @@ void FileTreePanel::uploadFiles()
     const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("上传到 %1").arg(base));
     for (const QString &local : files) {
         const QString remote = base + QLatin1Char('/') + QFileInfo(local).fileName();
-        m_worker->enqueue(SftpWorker::Op::Upload, local, remote);
+        enqueueStructural(SftpWorker::Op::Upload, local, remote);
     }
     if (!files.isEmpty())
         setStatus(QStringLiteral("已加入 %1 个上传任务").arg(files.size()));
@@ -273,7 +294,7 @@ void FileTreePanel::renameSelection()
     if (!ok || newName.trimmed().isEmpty())
         return;
     const QString target = QFileInfo(path).path() + QLatin1Char('/') + newName.trimmed();
-    m_worker->enqueue(SftpWorker::Op::Rename, path, target);
+    enqueueStructural(SftpWorker::Op::Rename, path, target);
     setStatus(QStringLiteral("正在重命名…"));
 }
 
@@ -292,7 +313,7 @@ void FileTreePanel::removeSelection()
               : QStringLiteral("确认删除 %1 ？").arg(path));
     if (answer != QMessageBox::Yes)
         return;
-    m_worker->enqueue(SftpWorker::Op::Remove, path);
+    enqueueStructural(SftpWorker::Op::Remove, path);
     setStatus(QStringLiteral("正在删除…"));
 }
 

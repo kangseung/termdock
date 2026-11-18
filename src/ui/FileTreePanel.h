@@ -3,6 +3,8 @@
 #include <QHash>
 #include <QWidget>
 
+#include "ssh/SftpWorker.h"
+
 class QLabel;
 class QTreeView;
 class QToolBar;
@@ -10,7 +12,6 @@ class QToolBar;
 namespace termdock {
 
 class SftpModel;
-class SftpWorker;
 
 // 右侧文件树：SFTP 浏览。顶部只放「路径 + 刷新 + 上传」，
 // 其余（新建文件/文件夹、重命名、删除、下载）都走右键菜单。
@@ -37,6 +38,10 @@ private:
     void openSelection();
     void copyRemotePath();
     void updatePathLabel();
+    // 会改变目录结构（新建/改名/删除/上传）的请求：记下操作完成后该刷新的目录
+    quint64 enqueueStructural(SftpWorker::Op op, const QString &path,
+                             const QString &path2 = QString());
+    void refreshDirPath(const QString &path);
 
     QModelIndex selectedIndex() const;
     QModelIndex currentDirectoryIndex() const;
@@ -49,6 +54,7 @@ private:
     SftpModel *m_model = nullptr;
     SftpWorker *m_worker = nullptr;
     QHash<quint64, QString> m_pendingDownloads;
+    QHash<quint64, QString> m_refreshDirs;
 };
 
 } // namespace termdock
