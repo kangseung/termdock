@@ -28,6 +28,9 @@ public:
 
     void setHomePath(const QString &path);
     QString homePath() const { return m_root ? m_root->entry.path : QString(); }
+    // 登录后的家目录（~）。地址栏输入 ~ 时用它，不随“当前根目录”变化
+    void setLoginHome(const QString &path) { m_loginHome = path; }
+    QString loginHome() const { return m_loginHome; }
     QString pathForIndex(const QModelIndex &index) const;
     QString nameForIndex(const QModelIndex &index) const;
     bool isDirIndex(const QModelIndex &index) const;
@@ -74,6 +77,7 @@ private:
     void collectPath(Node *node, const QString &path, QVector<Node *> *out) const;
 
     Node *m_root = nullptr;
+    QString m_loginHome;
     QHash<QString, QVector<Node *>> m_pending;
     QSet<QString> m_prefetchPaths;
     QSet<QString> m_probedDirs;  // 已经探过路的目录，避免重复探测

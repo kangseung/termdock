@@ -52,6 +52,7 @@ private:
         QString fingerprint;
         bool shellConnected = false;
         bool sftpReady = false;
+        QString sftpError; // SFTP 通道失败的原始原因（终端还连着时用它解释面板状态）
         QHash<quint64, QString> listRequests;
         QSet<quint64> quietListRequests; // 模型探路用的列表请求，不打扰状态栏
     };
@@ -69,6 +70,10 @@ private:
     // 右键标签页：编辑会话、再开一个、关闭
     void showTabMenu(const QPoint &pos);
     void updateTabPlaceholder();
+    // SFTP 通道：建立/重建（重连）、以及让文件树面板始终对齐当前标签页
+    void startSftp(Page *page);
+    void syncFilePanel();
+    void retrySftp();
     void onShellConnected(Page *page, const QString &fingerprint, const QString &hostKeyType);
     void onShellFailed(Page *page, const QString &message);
     void onShellClosed(Page *page, const QString &reason);

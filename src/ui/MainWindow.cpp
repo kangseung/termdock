@@ -99,6 +99,8 @@ void MainWindow::setupUi()
 
     m_filePanel = new FileTreePanel(this);
     m_filePanel->setMinimumWidth(240);
+    // 终端还在、SFTP 掉了的时候，工具条「重连」只重建 SFTP 通道
+    connect(m_filePanel, &FileTreePanel::retryRequested, this, &MainWindow::retrySftp);
 
     m_splitter = new QSplitter(Qt::Horizontal, this);
     // 默认布局：左 = 文件树，中 = 终端标签，右 = 会话簿
@@ -466,7 +468,6 @@ void MainWindow::openSession(const Session &session)
             [this](int delta) { adjustFontSize(delta); });
     connect(page->terminal, &TerminalWidget::bell, this, []() { QApplication::beep(); });
 
-    page->sftp = new SftpWorker(params, this);
     page->model = new SftpModel(this);
     connect(page->model, &SftpModel::listRequested, this,
             [page](const QString &path, bool prefetch) {
@@ -477,6 +478,37 @@ void MainWindow::openSession(const Session &session)
                         page->quietListRequests.insert(id);
                 }
             });
+    startSftp(page);
+
+    // 等这一轮布局结束再建连接：新建标签时终端还没拿到最终尺寸，
+    // 用临时尺寸建 PTY 会让远端按错误列宽生成 MOTD（右侧被截断）。
+    Page *startPage = page;
+    QTimer::singleShot(0, this, [this, startPage]() {
+        if (!m_pages.contains(startPage) || !startPage->shell)
+            return;
+        startPage->shell->resizePty(startPage->terminal->screen()->cols(),
+                                    startPage->terminal->screen()->rows());
+        startPage->shell->start();
+        if (startPage->sftp)
+            startPage->sftp->start();
+    });
+    updateStatusBar();
+}
+
+// 建立/重建一个页面的 SFTP 通道。抽出来是为了能“重连 SFTP”：
+// 终端还连着、SFTP 掉线时，重建 worker 而不用重开标签。
+void MainWindow::startSftp(Page *page)
+{
+    if (!page || !page->model)
+        return;
+    SshParams params;
+    params.host = page->session.host;
+    params.port = page->session.port;
+    params.user = page->session.user;
+    params.password = page->session.password;
+    params.expectedFingerprint = SessionStore::knownFingerprint(page->session.host, page->session.port);
+
+    page->sftp = new SftpWorker(params, this);
     connect(page->sftp, &SftpWorker::listed, this,
             [this, page](quint64 id, const QString &path, const SftpEntryList &entries) {
                 page->listRequests.remove(id);
@@ -499,27 +531,72 @@ void MainWindow::openSession(const Session &session)
     });
     connect(page->sftp, &SftpWorker::connected, this, [this, page](const QString &home) {
         page->sftpReady = true;
+        page->sftpError.clear();
+        page->model->setLoginHome(home);
         page->model->setHomePath(home);
-        if (page == currentPage())
-            m_filePanel->attach(page->model, page->sftp);
+        syncFilePanel();
     });
     connect(page->sftp, &SftpWorker::failed, this, [this, page](const QString &message) {
+        page->sftpReady = false;
+        page->sftpError = message;
+        syncFilePanel();
         if (page == currentPage())
-            m_filePanel->setStatus(QStringLiteral("SFTP 不可用：%1").arg(message));
+            statusBar()->showMessage(QStringLiteral("SFTP 不可用：%1").arg(message), 8000);
     });
+}
 
-    // 等这一轮布局结束再建连接：新建标签时终端还没拿到最终尺寸，
-    // 用临时尺寸建 PTY 会让远端按错误列宽生成 MOTD（右侧被截断）。
-    Page *startPage = page;
-    QTimer::singleShot(0, this, [this, startPage]() {
-        if (!m_pages.contains(startPage) || !startPage->shell)
+// 文件树面板永远跟着当前标签页的 SFTP 状态走：
+// 已连上就挂模型，连不上就明确写“连接中/不可用”，绝不留下一个“未连接”的空面板
+void MainWindow::syncFilePanel()
+{
+    Page *page = currentPage();
+    if (!page) {
+        m_filePanel->detach();
+        return;
+    }
+    if (page->sftpReady && page->sftp && page->model) {
+        if (m_filePanel->boundModel() != page->model)
+            m_filePanel->attach(page->model, page->sftp);
+        return;
+    }
+    m_filePanel->detach();
+    if (!page->sftpError.isEmpty())
+        m_filePanel->setStatus(QStringLiteral("SFTP 不可用：%1（点工具条「重连」再试一次）")
+                                   .arg(page->sftpError));
+    else
+        m_filePanel->setStatus(QStringLiteral("SFTP 连接中…"));
+}
+
+// 终端还在、只是 SFTP 挂了：重建 SFTP 通道，不动这个标签的其他东西
+void MainWindow::retrySftp()
+{
+    Page *page = currentPage();
+    if (!page || !page->shellConnected)
+        return;
+    if (page->sftp) {
+        QObject::disconnect(page->sftp, nullptr, this, nullptr);
+        page->sftp->stop();
+        // 线程退不出来就别硬删：删正在跑的 QThread 会 crash，等下次再试
+        if (!page->sftp->wait(2000)) {
+            statusBar()->showMessage(
+                QStringLiteral("SFTP 线程还没退出，稍后再点一次「重连」"), 8000);
             return;
-        startPage->shell->resizePty(startPage->terminal->screen()->cols(),
-                                    startPage->terminal->screen()->rows());
-        startPage->shell->start();
-        startPage->sftp->start();
-    });
-    updateStatusBar();
+        }
+        page->sftp->deleteLater();
+        page->sftp = nullptr;
+    }
+    page->sftpReady = false;
+    page->sftpError.clear();
+    page->listRequests.clear();
+    page->quietListRequests.clear();
+    page->model->setHomePath(QString());
+    syncFilePanel();
+    startSftp(page);
+    if (page->sftp) {
+        // 探路/首屏都从登录家目录重新开始
+        page->sftp->start();
+        syncFilePanel();
+    }
 }
 
 void MainWindow::onShellConnected(Page *page, const QString &fingerprint, const QString &hostKeyType)
@@ -605,8 +682,12 @@ void MainWindow::updateTabTitle(Page *page)
         title += QStringLiteral(" (%1)").arg(ordinal);
     if (!page->shellConnected)
         title += QStringLiteral(" · 已断开");
+    const QString fullTitle = title;
+    // 太长就中间省略：标签栏被挤爆时 Qt 会把文字硬切一半，很难看
+    const QFontMetrics metrics(m_tabs->tabBar()->font());
+    title = metrics.elidedText(title, Qt::ElideMiddle, 220);
     m_tabs->setTabText(index, title);
-    m_tabs->setTabToolTip(index, page->session.displaySubtitle());
+    m_tabs->setTabToolTip(index, fullTitle + QLatin1Char('\n') + page->session.displaySubtitle());
 }
 
 void MainWindow::setConfirmClose(bool on)
@@ -675,6 +756,8 @@ void MainWindow::closePage(int tabIndex)
         page->terminal->deleteLater();
     delete page;
 
+    // 关掉标签后，文件树必须重新对上存活的那个页面（终端还在 → 树也必须在）
+    syncFilePanel();
     updateStatusBar();
 }
 
@@ -705,14 +788,7 @@ void MainWindow::onTabChanged(int index)
 {
     Q_UNUSED(index);
     Page *page = currentPage();
-    if (page && page->sftp && page->sftpReady) {
-        m_filePanel->attach(page->model, page->sftp);
-    } else if (page) {
-        m_filePanel->detach();
-        m_filePanel->setStatus(QStringLiteral("SFTP 连接中…"));
-    } else {
-        m_filePanel->detach();
-    }
+    syncFilePanel();
     if (page) {
         m_sessionPanel->setActiveSessionId(page->session.id);
         page->terminal->setFocus(Qt::OtherFocusReason);

@@ -9,6 +9,7 @@
 #include "ssh/SftpWorker.h"
 
 class QLabel;
+class QLineEdit;
 class QTreeView;
 class QToolBar;
 
@@ -27,6 +28,12 @@ public:
     void attach(SftpModel *model, SftpWorker *worker);
     void detach();
     void setStatus(const QString &message);
+    // 当前挂着的模型（MainWindow 用它判断要不要重新 attach）
+    SftpModel *boundModel() const { return m_model; }
+
+signals:
+    // 用户点「重连」：MainWindow 负责重建这个标签页的 SFTP 通道
+    void retryRequested();
 
 protected:
     // 拖拽上传：监听文件树视口的 DragEnter/DragMove/Drop
@@ -45,6 +52,13 @@ private:
     void openSelection();
     void copyRemotePath();
     void updatePathLabel();
+    // 地址栏：回车跳转（支持 ~、绝对路径、相对当前目录），以及“上一级”
+    void commitPathEdit();
+    void navigateTo(const QString &target);
+    void goUpOneLevel();
+    // 切换标签时记住/恢复展开状态，别一换标签整棵树缩回去
+    QStringList expandedPaths() const;
+    void collectExpanded(const QModelIndex &parent, QStringList *out) const;
     // 会改变目录结构（新建/改名/删除/上传）的请求：记下操作完成后该刷新的目录
     quint64 enqueueStructural(SftpWorker::Op op, const QString &path,
                              const QString &path2 = QString());
@@ -61,7 +75,7 @@ private:
 
     QTreeView *m_view = nullptr;
     QToolBar *m_toolbar = nullptr;
-    QLabel *m_pathLabel = nullptr;
+    QLineEdit *m_pathEdit = nullptr;
     QLabel *m_status = nullptr;
     SftpModel *m_model = nullptr;
     SftpWorker *m_worker = nullptr;
@@ -73,6 +87,8 @@ private:
     QString m_statusBeforeDrag;
     // attach() 建立的连接，detach() 时逐条断开，避免切换标签时信号重复发送
     QVector<QMetaObject::Connection> m_attached;
+    // 每个模型上次离开时的展开路径（切回该标签时恢复）
+    QHash<SftpModel *, QStringList> m_expandedByModel;
 };
 
 } // namespace termdock

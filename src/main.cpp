@@ -701,7 +701,7 @@ int main(int argc, char *argv[])
     // 真正退出只走关窗 / 菜单“退出”，见 MainWindow::closeEvent。
     QApplication::setQuitOnLastWindowClosed(false);
     QApplication::setApplicationName(QStringLiteral("termdock"));
-    QApplication::setApplicationVersion(QStringLiteral("0.1.4"));
+    QApplication::setApplicationVersion(QStringLiteral("0.1.5"));
     QApplication::setOrganizationName(QStringLiteral("termdock"));
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/termdock-256.png")));
 

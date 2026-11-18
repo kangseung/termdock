@@ -5,6 +5,7 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDebug>
 #include <QDesktopServices>
 #include <QDir>
 #include <QDragEnterEvent>
@@ -15,6 +16,7 @@
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMimeData>
@@ -69,16 +71,24 @@ void FileTreePanel::setupUi()
     m_toolbar = new QToolBar(this);
     m_toolbar->setIconSize(QSize(15, 15));
     m_toolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_toolbar->addAction(QStringLiteral("上级"), this, &FileTreePanel::goUpOneLevel);
+    m_toolbar->addAction(QStringLiteral("重连"), this, [this]() {
+        setStatus(QStringLiteral("正在重连 SFTP…"));
+        emit retryRequested();
+    });
     m_toolbar->addAction(QStringLiteral("刷新"), this, &FileTreePanel::refreshCurrent);
     m_toolbar->addAction(QStringLiteral("上传"), this, &FileTreePanel::uploadFiles);
 
-    m_pathLabel = new QLabel(this);
-    m_pathLabel->setObjectName(QStringLiteral("hint"));
-    m_pathLabel->setContentsMargins(10, 0, 10, 4);
-    m_pathLabel->setText(QStringLiteral("未连接"));
-    m_pathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    // 路径栏可以直接改：回车跳到 ~ / 绝对路径 / 相对当前目录（比如打 /mnt 回车）
+    m_pathEdit = new QLineEdit(this);
+    m_pathEdit->setObjectName(QStringLiteral("pathEdit"));
+    m_pathEdit->setFrame(false);
+    m_pathEdit->setReadOnly(true);
+    m_pathEdit->setText(QStringLiteral("未连接"));
+    m_pathEdit->setToolTip(QStringLiteral("点一下就能改路径，回车跳转（支持 ~、/mnt 这种绝对路径、"
+                                          "以及相对当前目录的名字）"));
     layout->addWidget(m_toolbar);
-    layout->addWidget(m_pathLabel);
+    layout->addWidget(m_pathEdit);
 
     m_view = new QTreeView(this);
     m_view->setUniformRowHeights(true);
@@ -103,6 +113,12 @@ void FileTreePanel::setupUi()
     m_status->setText(QStringLiteral("未连接"));
     layout->addWidget(m_status);
 
+    // 平时只读展示当前目录，点进去就能改；回车跳转
+    connect(m_pathEdit, &QLineEdit::returnPressed, this, &FileTreePanel::commitPathEdit);
+    connect(m_pathEdit, &QLineEdit::editingFinished, this, [this]() {
+        // 回车已经处理过；这里只负责“改了一半又点别处”时把显示还原
+        updatePathLabel();
+    });
     connect(m_view, &QTreeView::doubleClicked, this, &FileTreePanel::openSelection);
     // 每展开一层就探一下这层的子目录内容：这样空目录不会白带一个展开箭头
     connect(m_view, &QTreeView::expanded, this, [this](const QModelIndex &index) {
@@ -126,6 +142,9 @@ void FileTreePanel::attach(SftpModel *model, SftpWorker *worker)
     m_worker = worker;
     m_view->setModel(model);
     if (model) {
+        // 不能用 Qt::UniqueConnection（lambda 不支持），重复连也只是多删一次哈希表
+        connect(model, &QObject::destroyed, this,
+                [this, model]() { m_expandedByModel.remove(model); });
         // 必须在设置 model 之后再配列宽，否则 Qt 会因为 section 数为 0 而崩溃
         // 面板窄的时候（小窗口/窗口被拉窄）名称列会被挤到看不见，留一个最小宽度
         m_view->header()->setMinimumSectionSize(96);
@@ -141,6 +160,19 @@ void FileTreePanel::attach(SftpModel *model, SftpWorker *worker)
                                       [this](const QModelIndex &, const QModelIndex &) {
                                           updatePathLabel();
                                       }));
+        }
+    }
+    if (model) {
+        // 恢复这个模型上次的展开状态（切换标签不该把树缩回去）
+        const QStringList saved = m_expandedByModel.value(model);
+        if (qEnvironmentVariableIsSet("TERMDOCK_DEBUG_TREE")) {
+            qWarning("attach: 恢复 model=%p 展开 %d 个：%s", static_cast<void *>(model),
+                     int(saved.size()), qPrintable(saved.join(QLatin1Char(','))));
+        }
+        for (const QString &path : saved) {
+            const QModelIndex index = model->indexForPath(path);
+            if (index.isValid())
+                m_view->expand(index);
         }
     }
     if (model && worker) {
@@ -180,6 +212,16 @@ void FileTreePanel::attach(SftpModel *model, SftpWorker *worker)
 
 void FileTreePanel::detach()
 {
+    // 摘掉面板前先把展开状态存进模型自己的记录里：这样切标签、开关标签回来，
+    // 展开过的目录还是展开的（openSession 会先 detach 再 attach，所以必须在这存）
+    if (m_model) {
+        const QStringList expanded = expandedPaths();
+        if (qEnvironmentVariableIsSet("TERMDOCK_DEBUG_TREE")) {
+            qWarning("detach: model=%p 展开 %d 个：%s", static_cast<void *>(m_model),
+                     int(expanded.size()), qPrintable(expanded.join(QLatin1Char(','))));
+        }
+        m_expandedByModel.insert(m_model, expanded);
+    }
     // 每次切标签都会重新 attach，旧连接必须断开：否则信号会一直累积，
     // 上一个会话的操作结果会写到当前面板的状态栏里
     for (const QMetaObject::Connection &connection : m_attached)
@@ -233,14 +275,109 @@ QString FileTreePanel::currentDirectory() const
 
 void FileTreePanel::updatePathLabel()
 {
+    if (!m_pathEdit)
+        return;
     if (!m_model) {
-        m_pathLabel->setText(QStringLiteral("未连接"));
-        m_pathLabel->setToolTip(QString());
+        m_pathEdit->setText(QStringLiteral("未连接"));
+        m_pathEdit->setReadOnly(true);
         return;
     }
+    // 正在输入时不要抢用户的字
+    if (m_pathEdit->hasFocus())
+        return;
     const QString dir = currentDirectory();
-    m_pathLabel->setText(dir.isEmpty() ? m_model->homePath() : dir);
-    m_pathLabel->setToolTip(dir);
+    const QString shown = dir.isEmpty() ? m_model->homePath() : dir;
+    m_pathEdit->setText(shown);
+    m_pathEdit->setCursorPosition(shown.size());
+    m_pathEdit->setReadOnly(false);
+}
+
+// 采集当前展开的目录路径（只递归已展开的节点，够用且省事）
+void FileTreePanel::collectExpanded(const QModelIndex &parent, QStringList *out) const
+{
+    if (!m_model || !out)
+        return;
+    const int rows = m_model->rowCount(parent);
+    for (int row = 0; row < rows; ++row) {
+        const QModelIndex index = m_model->index(row, 0, parent);
+        if (!index.isValid() || !m_view->isExpanded(index))
+            continue;
+        out->append(m_model->pathForIndex(index));
+        collectExpanded(index, out);
+    }
+}
+
+QStringList FileTreePanel::expandedPaths() const
+{
+    QStringList out;
+    if (m_model)
+        collectExpanded(QModelIndex(), &out);
+    return out;
+}
+
+void FileTreePanel::commitPathEdit()
+{
+    if (!m_model) {
+        updatePathLabel();
+        return;
+    }
+    navigateTo(m_pathEdit->text());
+}
+
+// 回车跳转：~ 是登录后的家目录，/ 开头是绝对路径，其余按“相对当前目录”处理
+void FileTreePanel::navigateTo(const QString &target)
+{
+    if (!m_model)
+        return;
+    QString input = target.trimmed();
+    const QString root = m_model->homePath();
+    if (input.isEmpty() || root.isEmpty()) {
+        updatePathLabel();
+        return;
+    }
+
+    QString resolved;
+    if (input == QLatin1String("~")) {
+        resolved = m_model->loginHome();
+    } else if (input.startsWith(QLatin1String("~/"))) {
+        resolved = m_model->loginHome() + input.mid(1);
+    } else if (input.startsWith(QLatin1Char('/'))) {
+        resolved = input;
+    } else {
+        resolved = root + QLatin1Char('/') + input;
+    }
+    resolved = QDir::cleanPath(resolved);
+    if (resolved.isEmpty()) {
+        updatePathLabel();
+        return;
+    }
+    if (resolved == root) {
+        m_pathEdit->setText(root);
+        m_pathEdit->clearFocus();
+        return;
+    }
+
+    // 换了根目录，旧根下的展开状态就没意义了
+    m_expandedByModel.remove(m_model);
+    m_model->setHomePath(resolved);
+    setStatus(QStringLiteral("正在打开 %1 …").arg(resolved));
+    m_pathEdit->setText(resolved);
+    m_pathEdit->setCursorPosition(resolved.size());
+    m_pathEdit->setReadOnly(false);
+    m_view->setFocus(Qt::OtherFocusReason);
+}
+
+void FileTreePanel::goUpOneLevel()
+{
+    if (!m_model)
+        return;
+    const QString root = m_model->homePath();
+    if (root.isEmpty() || root == QLatin1String("/"))
+        return;
+    const QString parent = QFileInfo(root).path();
+    if (parent.isEmpty() || parent == root)
+        return;
+    navigateTo(parent);
 }
 
 quint64 FileTreePanel::enqueueStructural(SftpWorker::Op op, const QString &path, const QString &path2)

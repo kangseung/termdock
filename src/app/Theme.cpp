@@ -101,6 +101,22 @@ QMainWindow, QDialog { background: #19232D; }
 QFrame[frameShape="4"], QFrame[frameShape="5"] { color: #37414B; }
 QLabel { background: transparent; }
 QLabel#hint { color: #7E8794; font-size: 12px; }
+/* SFTP 路径栏：平时像一行灰字，点进去就能改 */
+QLineEdit#pathEdit {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    padding: 3px 10px;
+    color: #8FA0B3;
+    font-size: 12px;
+    selection-background-color: #266B94;
+}
+QLineEdit#pathEdit:hover { color: #B6BFCE; }
+QLineEdit#pathEdit:focus {
+    background: #1E2933;
+    border: 1px solid #148CD2;
+    color: #E9EFF8;
+}
 QLabel#placeholder {
     color: #55606E;
     font-size: 14px;
