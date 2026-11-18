@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# 提交前拦截敏感信息：运行期数据/私钥文件、明文口令、私网 IP。
+# 想绕过：git commit --no-verify（绕过后请自查）。
+set -uo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+# shellcheck source=.githooks/sensitive.sh
+source "$root/.githooks/sensitive.sh"
+
+fail=0
+msg() { printf '✗ 拒绝提交：%s\n' "$1" >&2; fail=1; }
+
+while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    check_sensitive_path "$file"
+done < <(git diff --cached --name-only --diff-filter=ACMR)
+
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+# 只看新增行；钩子自身和 AGENTS.md 的规则说明里本来就有这些样例文字
+git diff --cached -U0 --diff-filter=ACMR -- . ':(exclude).githooks' ':(exclude)AGENTS.md' \
+    | grep '^+' | grep -v '^+++' > "$tmp" || true
+check_sensitive_text "$tmp"
+
+if [ "$fail" -ne 0 ]; then
+    echo "（确认安全后可加 --no-verify 跳过，但请在提交信息里说明原因）" >&2
+    exit 1
+fi

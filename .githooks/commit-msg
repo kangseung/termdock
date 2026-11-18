@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# 提交信息同样不许出现明文口令 / 私网 IP（上一次就是这么把 IP 写进历史的）。
+set -uo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+# shellcheck source=.githooks/sensitive.sh
+source "$root/.githooks/sensitive.sh"
+
+fail=0
+msg() { printf '✗ 提交信息里含%s，请改写成“远端测试机”之类的说法\n' "$1" >&2; fail=1; }
+
+check_sensitive_text "$1"
+
+[ "$fail" -eq 0 ] || exit 1
