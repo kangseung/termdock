@@ -650,6 +650,12 @@ void MainWindow::closePage(int tabIndex)
         if (answer != QMessageBox::Yes)
             return;
     }
+    // 面板此刻可能正挂在这个标签页的模型/worker 上（比如关的就是当前标签）。
+    // 必须先把面板摘下再删页：否则 removeTab 触发的 currentChanged 已经把
+    // 存活页重新挂上，后面再 detach 一次就把文件树擦成“未连接”了。
+    const bool wasCurrent = m_tabs->currentIndex() == tabIndex;
+    if (wasCurrent)
+        m_filePanel->detach();
     m_pages.removeAt(tabIndex);
     m_tabs->removeTab(tabIndex);
     updateTabPlaceholder();
@@ -663,11 +669,8 @@ void MainWindow::closePage(int tabIndex)
         page->sftp->wait(3000);
         page->sftp->deleteLater();
     }
-    if (page->model) {
-        if (currentPage() == nullptr || currentPage()->model != page->model)
-            m_filePanel->detach();
+    if (page->model)
         page->model->deleteLater();
-    }
     if (page->terminal)
         page->terminal->deleteLater();
     delete page;
