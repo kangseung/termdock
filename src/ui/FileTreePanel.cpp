@@ -89,35 +89,37 @@ void FileTreePanel::attach(SftpModel *model, SftpWorker *worker)
                                               QHeaderView::ResizeToContents);
         m_view->header()->setSectionResizeMode(SftpModel::ModeColumn, QHeaderView::ResizeToContents);
         if (QItemSelectionModel *selection = m_view->selectionModel()) {
-            connect(selection, &QItemSelectionModel::currentChanged, this,
-                    [this](const QModelIndex &, const QModelIndex &) { updatePathLabel(); });
+            m_attached.append(connect(selection, &QItemSelectionModel::currentChanged, this,
+                                      [this](const QModelIndex &, const QModelIndex &) {
+                                          updatePathLabel();
+                                      }));
         }
     }
     if (model && worker) {
-        connect(worker, &SftpWorker::progressed, this,
-                [this](quint64 id, qint64 done, qint64 total) {
-                    Q_UNUSED(id);
-                    if (total > 0) {
-                        setStatus(QStringLiteral("传输中 %1 / %2 KB（%3%）")
-                                      .arg(done / 1024)
-                                      .arg(total / 1024)
-                                      .arg(int(done * 100 / total)));
-                    }
-                });
-        connect(worker, &SftpWorker::succeeded, this, [this](quint64 id, const QString &message) {
-            setStatus(message);
-            const QString localPath = m_pendingDownloads.take(id);
-            if (!localPath.isEmpty())
-                QDesktopServices::openUrl(QUrl::fromLocalFile(localPath));
-            // 结构变化后自动刷新受影响目录，省得用户手动点刷新。
-            // 必须刷父目录：被改名/删除的条目自己已经不在服务器上了，去列它会报 SFTP 错误。
-            const QString dirPath = m_refreshDirs.take(id);
-            if (!dirPath.isEmpty())
-                refreshDirPath(dirPath);
-        });
-        connect(worker, &SftpWorker::failedOp, this, [this](quint64, const QString &message) {
-            setStatus(message);
-        });
+        m_attached.append(connect(worker, &SftpWorker::progressed, this,
+                                  [this](quint64 id, qint64 done, qint64 total) {
+                                      Q_UNUSED(id);
+                                      if (total > 0) {
+                                          setStatus(QStringLiteral("传输中 %1 / %2 KB（%3%）")
+                                                        .arg(done / 1024)
+                                                        .arg(total / 1024)
+                                                        .arg(int(done * 100 / total)));
+                                      }
+                                  }));
+        m_attached.append(connect(worker, &SftpWorker::succeeded, this,
+                                  [this](quint64 id, const QString &message) {
+                                      setStatus(message);
+                                      const QString localPath = m_pendingDownloads.take(id);
+                                      if (!localPath.isEmpty())
+                                          QDesktopServices::openUrl(QUrl::fromLocalFile(localPath));
+                                      // 结构变化后自动刷新受影响目录，省得用户手动点刷新。
+                                      // 必须刷父目录：被改名/删除的条目自己已经不在服务器上了，去列它会报 SFTP 错误。
+                                      const QString dirPath = m_refreshDirs.take(id);
+                                      if (!dirPath.isEmpty())
+                                          refreshDirPath(dirPath);
+                                  }));
+        m_attached.append(connect(worker, &SftpWorker::failedOp, this,
+                                  [this](quint64, const QString &message) { setStatus(message); }));
         setStatus(QStringLiteral("正在加载目录…"));
     }
     updatePathLabel();
@@ -125,6 +127,11 @@ void FileTreePanel::attach(SftpModel *model, SftpWorker *worker)
 
 void FileTreePanel::detach()
 {
+    // 每次切标签都会重新 attach，旧连接必须断开：否则信号会一直累积，
+    // 上一个会话的操作结果会写到当前面板的状态栏里
+    for (const QMetaObject::Connection &connection : m_attached)
+        disconnect(connection);
+    m_attached.clear();
     m_view->setModel(nullptr);
     m_model = nullptr;
     m_worker = nullptr;

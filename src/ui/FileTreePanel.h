@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QHash>
+#include <QVector>
 #include <QWidget>
 
 #include "ssh/SftpWorker.h"
@@ -55,6 +56,8 @@ private:
     SftpWorker *m_worker = nullptr;
     QHash<quint64, QString> m_pendingDownloads;
     QHash<quint64, QString> m_refreshDirs;
+    // attach() 建立的连接，detach() 时逐条断开，避免切换标签时信号重复发送
+    QVector<QMetaObject::Connection> m_attached;
 };
 
 } // namespace termdock
