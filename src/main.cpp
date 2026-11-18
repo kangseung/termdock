@@ -678,12 +678,12 @@ int main(int argc, char *argv[])
                     maybeImportLegacyData(AppConfig::dataDir());
                 if (!Recovery::enabled()) {
                     const auto wantsRecovery = QMessageBox::question(
-                        nullptr, QStringLiteral("密码恢复保险（可选）"),
+                        nullptr, QStringLiteral("安全密钥（可选）"),
                         QStringLiteral(
-                            "要不要顺手开启「密码恢复保险」？\n\n"
-                            "开启后你可以凭自己设置的恢复口令，随时导出已保存会话的明文密码；"
+                            "要不要顺手留一把「安全密钥」？\n\n"
+                            "留了以后，凭这把密钥就能随时解锁查看已保存的 SSH 明文密码；"
                             "即使密钥文件丢失也能救回来。不开启不影响使用，主密钥丢失则历史密码无法解密。\n\n"
-                            "这个开关以后随时可以在「文件 → 已保存的密码…」里开启或关闭。"));
+                            "以后随时可以在「文件 → 安全密钥与已保存的密码…」里设置或删除。"));
                     if (wantsRecovery == QMessageBox::Yes)
                         VaultDialog::promptEnable(nullptr);
                 }

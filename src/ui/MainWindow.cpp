@@ -84,7 +84,7 @@ void MainWindow::setupUi()
     auto *placeholder = new QWidget(this);
     auto *placeholderLayout = new QVBoxLayout(placeholder);
     auto *placeholderText = new QLabel(
-        QStringLiteral("双击右侧的会话即可连接\n\nCtrl+N 新建会话 · Ctrl+Shift+K 查看已保存的密码"),
+        QStringLiteral("双击右侧的会话即可连接\n\nCtrl+N 新建会话 · Ctrl+Shift+K 用安全密钥解锁已保存密码"),
         placeholder);
     placeholderText->setObjectName(QStringLiteral("placeholder"));
     placeholderText->setAlignment(Qt::AlignCenter);
@@ -131,7 +131,7 @@ void MainWindow::setupActions()
     newAction->setShortcut(QKeySequence::New);
     connect(newAction, &QAction::triggered, this, &MainWindow::newSession);
 
-    auto *vaultAction = fileMenu->addAction(QStringLiteral("已保存的密码…"));
+    auto *vaultAction = fileMenu->addAction(QStringLiteral("安全密钥与已保存的密码…"));
     vaultAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+K")));
     connect(vaultAction, &QAction::triggered, this, [this]() {
         VaultDialog dialog(this);

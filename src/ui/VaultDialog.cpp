@@ -40,7 +40,7 @@ QJsonArray loadRawSessions()
 VaultDialog::VaultDialog(QWidget *parent)
     : QDialog(parent)
 {
-    setWindowTitle(QStringLiteral("已保存的密码"));
+    setWindowTitle(QStringLiteral("安全密钥 · 已保存的密码"));
     setMinimumSize(720, 460);
     setupUi();
     refreshState();
@@ -60,11 +60,11 @@ void VaultDialog::setupUi()
     auto *unlockRow = new QHBoxLayout();
     m_passphrase = new QLineEdit(this);
     m_passphrase->setEchoMode(QLineEdit::Password);
-    m_passphrase->setPlaceholderText(QStringLiteral("恢复口令"));
+    m_passphrase->setPlaceholderText(QStringLiteral("安全密钥"));
     m_unlockButton = new QPushButton(QStringLiteral("解锁查看"), this);
     m_unlockButton->setObjectName(QStringLiteral("primary"));
-    m_enableButton = new QPushButton(QStringLiteral("启用恢复保险…"), this);
-    m_disableButton = new QPushButton(QStringLiteral("关闭恢复保险"), this);
+    m_enableButton = new QPushButton(QStringLiteral("设置安全密钥…"), this);
+    m_disableButton = new QPushButton(QStringLiteral("删除安全密钥"), this);
     unlockRow->addWidget(m_passphrase, 1);
     unlockRow->addWidget(m_unlockButton);
     unlockRow->addWidget(m_enableButton);
@@ -94,6 +94,7 @@ void VaultDialog::setupUi()
     layout->addWidget(m_table, 1);
 
     auto *bottom = new QHBoxLayout();
+    bottom->setSpacing(10);
     m_showPlain = new QCheckBox(QStringLiteral("显示明文（默认遮罩）"), this);
     auto *copyButton = new QPushButton(QStringLiteral("复制所选密码"), this);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
@@ -123,8 +124,8 @@ bool VaultDialog::promptEnable(QWidget *parent)
 {
     bool ok = false;
     const QString first = QInputDialog::getText(
-        parent, QStringLiteral("启用恢复保险"),
-        QStringLiteral("设置一个恢复口令（至少 6 位）。\n以后凭它就能导出已保存的明文密码，请自己记牢："),
+        parent, QStringLiteral("设置安全密钥"),
+        QStringLiteral("设置一个安全密钥（至少 6 位）。\n以后凭它就能解锁并查看已保存的 SSH 明文密码，请自己记牢："),
         QLineEdit::Password, QString(), &ok);
     if (!ok || first.isEmpty())
         return false;
@@ -144,23 +145,23 @@ bool VaultDialog::promptEnable(QWidget *parent)
         return false;
     }
     QMessageBox::information(parent, QStringLiteral("已开启"),
-                             QStringLiteral("恢复保险已开启，恢复数据保存在：\n%1").arg(Recovery::filePath()));
+                             QStringLiteral("安全密钥已设置，校验数据保存在：\n%1").arg(Recovery::filePath()));
     return true;
 }
 
 void VaultDialog::refreshState()
 {
     const bool on = Recovery::enabled();
-    m_stateLabel->setText(on ? QStringLiteral("恢复保险：已开启")
-                             : QStringLiteral("恢复保险：未开启"));
+    m_stateLabel->setText(on ? QStringLiteral("安全密钥：已设置")
+                             : QStringLiteral("安全密钥：未设置"));
     m_passphrase->setEnabled(on);
     m_unlockButton->setEnabled(on);
     m_enableButton->setVisible(!on);
     m_disableButton->setVisible(on);
     if (!on) {
         m_hint->setText(QStringLiteral(
-            "当前未开启恢复保险：密码仍然加密保存，但主密钥文件（key）一旦丢失，历史密码就无法解开。"
-            "点「启用恢复保险…」设置一个恢复口令即可多一层保障，随时可关闭。"));
+            "当前没有安全密钥：SSH 密码仍然加密保存，但主密钥文件（key）一旦丢失，历史密码就无法解开。"
+            "点「设置安全密钥…」留一个密钥即可多一层保障，随时可以删除。"));
         clearTable();
     }
 }
@@ -175,14 +176,14 @@ void VaultDialog::enableRecovery()
 
 void VaultDialog::disableRecovery()
 {
-    if (QMessageBox::question(this, QStringLiteral("关闭恢复保险"),
-                              QStringLiteral("关闭后会删除恢复数据（recovery.json），之后只能靠 key 文件解密。确定？"))
+    if (QMessageBox::question(this, QStringLiteral("删除安全密钥"),
+                              QStringLiteral("删除后只能用 key 文件解密已保存的密码（换机器/丢文件就解不开了）。确定？"))
         != QMessageBox::Yes)
         return;
     Recovery::disable();
     clearTable();
     refreshState();
-    m_hint->setText(QStringLiteral("恢复保险已关闭。"));
+    m_hint->setText(QStringLiteral("安全密钥已删除。"));
 }
 
 void VaultDialog::clearTable()
