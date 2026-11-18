@@ -71,8 +71,19 @@ void VtScreen::resize(int cols, int rows)
             // 否则一放大就凭空多出几行空白。
             const int grow = rows - oldRows;
             int pulled = 0;
+            // 1) 先还回上次缩小临时拿走的行（后进先出），保证缩小/放大幂等
+            while (pulled < grow && !buf->resizeBacklog.empty()) {
+                const auto &entry = buf->resizeBacklog.back();
+                buf->lines.insert(buf->lines.begin(), entry.first);
+                if (entry.second && !buf->scrollback.empty())
+                    buf->scrollback.pop_back();
+                buf->resizeBacklog.pop_back();
+                ++pulled;
+            }
+            // 2) 不够的话再从真正的历史里拿
             while (pulled < grow && !buf->scrollback.empty()) {
                 if (buf == &m_primary || m_altActive) {
+                    buf->resizeBacklog.clear();
                     buf->lines.insert(buf->lines.begin(), buf->scrollback.back());
                     buf->scrollback.pop_back();
                     ++pulled;
@@ -101,6 +112,10 @@ void VtScreen::resize(int cols, int rows)
                     buf->scrollback.push_back(top);
                     while (int(buf->scrollback.size()) > m_scrollbackLimit)
                         buf->scrollback.pop_front();
+                    buf->resizeBacklog.emplace_back(top, true);
+                } else {
+                    // 空白行也记下来，放大时按原样补回去，行数才对得上
+                    buf->resizeBacklog.emplace_back(top, false);
                 }
                 buf->lines.erase(buf->lines.begin());
             }
@@ -188,6 +203,8 @@ void VtScreen::blankCells(VtLine &line, int from, int to)
 void VtScreen::scrollbackPush(const VtLine &line)
 {
     Buffer &b = current();
+    // 有新的输出滚出屏幕，说明屏幕内容已经变了，resize 暂存的行不再是"紧邻上方"
+    b.resizeBacklog.clear();
     b.scrollback.push_back(line);
     while (int(b.scrollback.size()) > m_scrollbackLimit)
         b.scrollback.pop_front();
