@@ -176,9 +176,7 @@ private:
     struct Buffer {
         std::vector<VtLine> lines;      // 恰好 rows 行
         std::deque<VtLine> scrollback;  // 滚出屏幕的历史行
-        // 因为窗口变小而临时推到滚回里的行。窗口放大时优先按原样还回来，
-        // 保证「缩小再放大」是幂等的，不会把同一行复制到屏幕上（错位/重复的来源）。
-        std::vector<std::pair<VtLine, bool>> resizeBacklog; // bool = 该行是否已进 scrollback
+
         VtPen pen;
         int cx = 0;
         int cy = 0;

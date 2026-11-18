@@ -67,62 +67,31 @@ void VtScreen::resize(int cols, int rows)
             line.cells.resize(size_t(cols));
 
         if (rows > oldRows) {
-            // 变大：优先从滚回里把内容拉回来，保持视口底部是同一行，
-            // 否则一放大就凭空多出几行空白。
-            const int grow = rows - oldRows;
-            int pulled = 0;
-            // 1) 先还回上次缩小临时拿走的行（后进先出），保证缩小/放大幂等
-            while (pulled < grow && !buf->resizeBacklog.empty()) {
-                const auto &entry = buf->resizeBacklog.back();
-                buf->lines.insert(buf->lines.begin(), entry.first);
-                if (entry.second && !buf->scrollback.empty())
-                    buf->scrollback.pop_back();
-                buf->resizeBacklog.pop_back();
-                ++pulled;
-            }
-            // 2) 不够的话再从真正的历史里拿
-            while (pulled < grow && !buf->scrollback.empty()) {
-                if (buf == &m_primary || m_altActive) {
-                    buf->resizeBacklog.clear();
-                    buf->lines.insert(buf->lines.begin(), buf->scrollback.back());
-                    buf->scrollback.pop_back();
-                    ++pulled;
-                } else {
-                    break;
-                }
-            }
-            buf->lines.insert(buf->lines.begin(), size_t(grow - pulled), VtLine());
+            // 变大：只在下面加空白行。内容位置一动不动，
+            // 绝不从滚回里往回拉——那样会把同一行复制到屏幕上（重复的提示符、错位）。
             buf->lines.resize(size_t(rows));
-            for (auto &line : buf->lines)
-                line.cells.resize(size_t(cols), VtCell());
         } else if (rows < oldRows) {
-            // 变小：从顶部丢行。只有真的有内容且是主屏时才进滚回，
-            // 空白行直接丢掉，避免"滚到顶还有几行空白"的错觉。
-            const int drop = oldRows - rows;
-            for (int i = 0; i < drop; ++i) {
-                const VtLine &top = buf->lines.front();
+            // 变小：从底部裁掉。被裁掉的行如果有内容，进滚回，不丢东西。
+            for (int i = 0; i < oldRows - rows; ++i) {
+                VtLine tail = std::move(buf->lines.back());
+                buf->lines.pop_back();
                 bool hasContent = false;
-                for (const VtCell &cell : top.cells) {
+                for (const VtCell &cell : tail.cells) {
                     if (cell.ch != U' ' && cell.ch != 0) {
                         hasContent = true;
                         break;
                     }
                 }
-                if (hasContent && !m_altActive && buf == &m_primary) {
-                    buf->scrollback.push_back(top);
+                if (hasContent && buf == &m_primary && !m_altActive) {
+                    buf->scrollback.push_back(std::move(tail));
                     while (int(buf->scrollback.size()) > m_scrollbackLimit)
                         buf->scrollback.pop_front();
-                    buf->resizeBacklog.emplace_back(top, true);
-                } else {
-                    // 空白行也记下来，放大时按原样补回去，行数才对得上
-                    buf->resizeBacklog.emplace_back(top, false);
                 }
-                buf->lines.erase(buf->lines.begin());
             }
-            buf->lines.resize(size_t(rows));
-            for (auto &line : buf->lines)
-                line.cells.resize(size_t(cols), VtCell());
         }
+        buf->lines.resize(size_t(rows));
+        for (auto &line : buf->lines)
+            line.cells.resize(size_t(cols), VtCell());
     }
 
     m_cols = cols;
@@ -203,8 +172,6 @@ void VtScreen::blankCells(VtLine &line, int from, int to)
 void VtScreen::scrollbackPush(const VtLine &line)
 {
     Buffer &b = current();
-    // 有新的输出滚出屏幕，说明屏幕内容已经变了，resize 暂存的行不再是"紧邻上方"
-    b.resizeBacklog.clear();
     b.scrollback.push_back(line);
     while (int(b.scrollback.size()) > m_scrollbackLimit)
         b.scrollback.pop_front();
