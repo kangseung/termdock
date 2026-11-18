@@ -49,69 +49,28 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE"
 cp "$BUILD/$APP.exe" "$STAGE/$APP.exe"
 
-# ---------- Qt 运行库与插件 ----------
-info "== 收集 Qt 依赖 =="
-# --include-plugins 里带上 qoffscreen/qminimal：默认只部署 qwindows，
-# 而 CI 和 `--selftest` 走的是 QT_QPA_PLATFORM=offscreen，缺了插件
-# Qt 会直接卡在平台初始化（进程不退出、也没有任何输出）。
-windeployqt6.exe --release --no-translations --no-system-d3d-compiler \
-    --no-system-dxc-compiler --no-opengl-sw --no-quick-import \
-    --include-plugins qoffscreen,qminimal,qwindows \
-    --compiler-runtime --dir "$STAGE" "$STAGE/$APP.exe" >/dev/null 2>&1 || {
-    # 有些 windeployqt 版本没有某几个开关，退回到最小参数集
-    windeployqt6.exe --release --no-translations --compiler-runtime \
-        --include-plugins qoffscreen,qminimal,qwindows \
-        --dir "$STAGE" "$STAGE/$APP.exe" >/dev/null
-}
-
-# ---------- 非 Qt 依赖（OpenSSL / libssh2 / MinGW 运行时）----------
-# windeployqt 只认 Qt 自己的依赖，libcrypto/libssl/libssh2 和
-# libgcc/libstdc++/libwinpthread 得自己沿着 import table 走一遍闭包。
-info "== 收集系统依赖闭包 =="
-
-declare -A copied=()
-queue=("$STAGE/$APP.exe")
-# 起点必须包含根目录 DLL **以及子目录里的插件**：插件在 platforms/ imageformats/
-# styles/ tls/ generic/ 下，漏掉它们就会漏掉只有插件才需要的库
-# （qjpeg.dll → libjpeg-8.dll），运行时表现为 STATUS_DLL_NOT_FOUND 直接退出。
-while IFS= read -r dll; do
-    queue+=("$dll")
-done < <(find "$STAGE" -name '*.dll')
-
-deps_of() {
-    objdump -p "$1" 2>/dev/null | awk '/DLL Name:/{print $3}'
-}
-
-while [ ${#queue[@]} -gt 0 ]; do
-    current="${queue[0]}"
-    queue=("${queue[@]:1}")
-    while IFS= read -r name; do
-        [ -n "$name" ] || continue
-        [ -n "${copied[$name]:-}" ] && continue
-        # 已有同名 DLL（Qt 那份）就不要覆盖
-        [ -f "$STAGE/$name" ] && { copied[$name]=1; continue; }
-        source="$MINGW_PREFIX/bin/$name"
-        [ -f "$source" ] || continue
-        case "$name" in
-            KERNEL32.dll | USER32.dll | ADVAPI32.dll | GDI32.dll | SHELL32.dll | \
-                ole32.dll | OLEAUT32.dll | WS2_32.dll | msvcrt.dll | \
-                ucrtbase.dll | api-ms-win-*.dll | d3d11.dll | dxgi.dll | \
-                d3dcompiler_*.dll | dwmapi.dll | uxtheme.dll | winmm.dll | \
-                imm32.dll | comdlg32.dll | comctl32.dll | setupapi.dll | \
-                version.dll | netapi32.dll | userenv.dll | shlwapi.dll | \
-                bcrypt.dll | crypt32.dll | secur32.dll | ntdll.dll)
-                continue ;; # 系统自带，绝不能打包进便携版
-        esac
-        cp -L "$source" "$STAGE/$name"
-        copied[$name]=1
-        queue+=("$source")
-    done < <(deps_of "$current")
-done
+# ---------- Qt 与依赖闭包 ----------
+# 和构建后步骤共用同一个脚本，保证「build/ 里双击能跑」和「便携包能跑」是同一条路径。
+info "== 收集依赖（windeployqt + import 闭包）=="
+MINGW_PREFIX="$MINGW_PREFIX" "$ROOT/packaging/deploy-windows-deps.sh" "$STAGE" "$APP"
 
 # ---------- 依赖完整性门禁 ----------
 # 打包漏掉某个 DLL 是静默失败：本地 PATH 里有 MSYS2 就照样能跑，
 # 到了用户机器上直接 STATUS_DLL_NOT_FOUND 退出。所以发布前必须自证闭包完整。
 info "== 依赖完整性检查 =="
+deps_of() {
+    objdump -p "$1" 2>/dev/null | awk '/DLL Name:/{print $3}'
+}
+
+# 门禁本身必须能失败：之前删掉 deps_of 时它静默变成 "command not found"，
+# 结果一边打错误一边报「依赖完整」，等于没有门禁。
+if command -v objdump >/dev/null 2>&1; then :; else
+    die "找不到 objdump，无法校验依赖完整性（MSYS2 的 binutils 应随工具链安装）"
+fi
+if [ -z "$(deps_of "$STAGE/$APP.exe")" ]; then
+    die "依赖校验读不出 $APP.exe 的 import table，门禁无法工作"
+fi
+
 declare -A verified=()
 declare -A absent=()
 check_queue=()

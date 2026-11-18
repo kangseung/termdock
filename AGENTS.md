@@ -73,8 +73,13 @@ build-win\termdock-tests.exe
 build-win\termdock.exe --selftest
 ```
 
-打 Windows 便携包（自带 Qt/OpenSSL/libssh2/MinGW 运行库）：在 MSYS2 bash 里跑
-`./packaging/make-release-windows.sh`，产物在 `dist/*-windows-x64.zip`。
+构建后 `build-win/` 里的 `termdock.exe` **可以直接双击运行**：CMake 的 POST_BUILD
+会调 `packaging/deploy-windows-deps.sh` 把 Qt 与整条依赖闭包摆到 exe 旁边。
+（早先只搬直接依赖，双击就弹「找不到 Qt6Core.dll」，很容易被误当成程序坏了。）
+
+发布用便携包：`./packaging/make-release-windows.sh`，产物在 `dist/*-windows-x64.zip`。
+它复用同一个 `deploy-windows-deps.sh`，所以「build 里能跑」和「包里能跑」走同一条路径；
+打包末尾还有依赖完整性门禁，删掉任何一个传递依赖都会直接失败（已用 libjpeg/libicuuc 验证过）。
 
 移植时踩过的坑，改代码时别再踩回去：
 

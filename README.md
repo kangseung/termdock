@@ -196,6 +196,10 @@ Windows 版的网络层走 Winsock（`src/ssh/NetCompat.*`），远端 PTY 由 S
 所以**不需要**本地 ConPTY；SFTP 路径一律按 POSIX 语义处理，不会把 Linux 文件名里的
 `\`、`:` 当成本地路径分隔符或盘符。
 
+构建完成后 `build-win/termdock.exe` 可以直接双击运行——CMake 会在链接后自动把
+Qt 和整条依赖闭包（OpenSSL / libssh2 / MinGW / icu / freetype …）部署到 exe 旁边。
+想分发给别人时再用 `make-release-windows.sh` 打便携包，产物在 `dist/`。
+
 ---
 
 ## 命令行（自测用）

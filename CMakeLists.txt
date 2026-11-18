@@ -98,6 +98,26 @@ if(UNIX AND NOT APPLE)
         INSTALL_RPATH "\$ORIGIN/lib")
 endif()
 
+# Windows 上把运行库和 Qt 插件直接摆到 exe 旁边：否则 `build/` 里的 exe 双击就弹
+# 「找不到 Qt6Core.dll」，构建产物本身没法直接运行/自检，很容易被误当成程序坏了。
+#
+# 用 packaging/deploy-windows-deps.sh 而不是直接调 windeployqt：后者只搬 Qt 自己的
+# 直接依赖，Qt6Gui 背后的 icu/freetype/harfbuzz/glib 那串传递依赖不会被递归带上，
+# 双击照样启动失败。发布用的便携包也用同一个脚本，保证两边一致。
+if(WIN32)
+    find_program(TERMDOCK_BASH NAMES bash HINTS "C:/msys64/usr/bin" "C:/msys64/bin")
+    if(TERMDOCK_BASH)
+        add_custom_command(TARGET termdock POST_BUILD
+            COMMAND "${TERMDOCK_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/packaging/deploy-windows-deps.sh"
+                "$<TARGET_FILE_DIR:termdock>" termdock
+            COMMENT "部署 Qt 与运行库到构建目录（让编译产物能直接双击运行）"
+            VERBATIM)
+    else()
+        message(STATUS "未找到 bash：build/ 里的 exe 不会自带 Qt DLL，"
+                       "请从 dist/ 的便携包运行，或用 packaging/make-release-windows.sh 打包")
+    endif()
+endif()
+
 install(TARGETS termdock RUNTIME DESTINATION bin)
 # .desktop 和 hicolor 图标是 Linux 桌面规范，Windows 上装了也没意义
 if(UNIX AND NOT APPLE)
