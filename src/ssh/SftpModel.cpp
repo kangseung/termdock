@@ -1,0 +1,314 @@
+#include "ssh/SftpModel.h"
+
+#include <QApplication>
+#include <QDateTime>
+#include <QDir>
+#include <QFileIconProvider>
+#include <QStyle>
+
+namespace termdock {
+
+namespace {
+
+QString formatSize(qint64 size, bool isDir)
+{
+    if (isDir)
+        return QStringLiteral("<目录>");
+    if (size < 1024)
+        return QStringLiteral("%1 B").arg(size);
+    const double kb = size / 1024.0;
+    if (kb < 1024.0)
+        return QStringLiteral("%1 KB").arg(kb, 0, 'f', 1);
+    const double mb = kb / 1024.0;
+    if (mb < 1024.0)
+        return QStringLiteral("%1 MB").arg(mb, 0, 'f', 1);
+    return QStringLiteral("%1 GB").arg(mb / 1024.0, 0, 'f', 2);
+}
+
+QIcon iconFor(bool isDir)
+{
+    static const QIcon dirIcon = QApplication::style()->standardIcon(QStyle::SP_DirIcon);
+    static const QIcon fileIcon = QApplication::style()->standardIcon(QStyle::SP_FileIcon);
+    return isDir ? dirIcon : fileIcon;
+}
+
+} // namespace
+
+SftpModel::SftpModel(QObject *parent)
+    : QAbstractItemModel(parent)
+{
+}
+
+SftpModel::~SftpModel()
+{
+    delete m_root;
+}
+
+void SftpModel::deleteNode(Node *node)
+{
+    if (!node)
+        return;
+    for (Node *child : node->children)
+        deleteNode(child);
+    node->children.clear();
+    delete node;
+}
+
+void SftpModel::setHomePath(const QString &path)
+{
+    beginResetModel();
+    deleteNode(m_root);
+    m_pending.clear();
+    m_root = new Node();
+    m_root->entry.path = path;
+    m_root->entry.name = QFileInfo(path).fileName();
+    if (m_root->entry.name.isEmpty())
+        m_root->entry.name = path;
+    m_root->entry.isDir = true;
+    endResetModel();
+    requestListing(m_root);
+}
+
+void SftpModel::clearChildren(Node *node)
+{
+    if (!node || node->children.isEmpty())
+        return;
+    for (Node *child : node->children)
+        deleteNode(child);
+    node->children.clear();
+}
+
+void SftpModel::requestListing(Node *node)
+{
+    if (!node || node->loading || node->fetched)
+        return;
+    node->loading = true;
+    m_pending[node->entry.path].append(node);
+    emit listRequested(node->entry.path);
+}
+
+void SftpModel::markLoadingFailed(const QString &path)
+{
+    const QVector<Node *> nodes = m_pending.take(path);
+    for (Node *node : nodes)
+        node->loading = false;
+}
+
+void SftpModel::applyListing(const QString &path, const SftpEntryList &entries)
+{
+    const QVector<Node *> nodes = m_pending.take(path);
+    for (Node *node : nodes) {
+        node->loading = false;
+        node->fetched = true;
+        const QModelIndex parentIndex = indexForNode(node);
+        if (!entries.isEmpty()) {
+            beginInsertRows(parentIndex, 0, int(entries.size()) - 1);
+            node->children.reserve(entries.size());
+            for (const SftpEntry &entry : entries) {
+                Node *child = new Node();
+                child->entry = entry;
+                child->parent = node;
+                node->children.append(child);
+            }
+            endInsertRows();
+        }
+        if (parentIndex.isValid())
+            emit dataChanged(parentIndex, parentIndex);
+    }
+}
+
+void SftpModel::refresh(const QModelIndex &index)
+{
+    Node *node = index.isValid() ? nodeFromIndex(index) : m_root;
+    if (!node)
+        return;
+    if (!node->children.isEmpty()) {
+        beginRemoveRows(index, 0, int(node->children.size()) - 1);
+        clearChildren(node);
+        endRemoveRows();
+    }
+    node->fetched = false;
+    node->loading = false;
+    m_pending.remove(node->entry.path);
+    if (index.isValid())
+        requestListing(node);
+    else
+        requestListing(m_root);
+}
+
+QModelIndex SftpModel::indexForNode(const Node *node) const
+{
+    if (!node || node == m_root)
+        return QModelIndex();
+    const Node *parent = node->parent;
+    if (!parent)
+        return QModelIndex();
+    const int row = int(parent->children.indexOf(const_cast<Node *>(node)));
+    if (row < 0)
+        return QModelIndex();
+    return createIndex(row, NameColumn, const_cast<Node *>(node));
+}
+
+SftpModel::Node *SftpModel::nodeFromIndex(const QModelIndex &index) const
+{
+    if (!index.isValid())
+        return m_root;
+    return static_cast<Node *>(index.internalPointer());
+}
+
+QModelIndex SftpModel::index(int row, int column, const QModelIndex &parent) const
+{
+    if (!hasIndex(row, column, parent))
+        return QModelIndex();
+    Node *parentNode = nodeFromIndex(parent);
+    if (!parentNode || row < 0 || row >= int(parentNode->children.size()))
+        return QModelIndex();
+    return createIndex(row, column, parentNode->children[row]);
+}
+
+QModelIndex SftpModel::parent(const QModelIndex &child) const
+{
+    if (!child.isValid())
+        return QModelIndex();
+    Node *node = nodeFromIndex(child);
+    if (!node || !node->parent || node->parent == m_root)
+        return QModelIndex();
+    return indexForNode(node->parent);
+}
+
+int SftpModel::rowCount(const QModelIndex &parent) const
+{
+    if (parent.column() > 0)
+        return 0;
+    const Node *node = nodeFromIndex(parent);
+    return node ? int(node->children.size()) : 0;
+}
+
+int SftpModel::columnCount(const QModelIndex &parent) const
+{
+    Q_UNUSED(parent);
+    return ColumnCount;
+}
+
+QVariant SftpModel::data(const QModelIndex &index, int role) const
+{
+    if (!index.isValid())
+        return QVariant();
+    const Node *node = nodeFromIndex(index);
+    if (!node)
+        return QVariant();
+    const SftpEntry &entry = node->entry;
+
+    switch (role) {
+    case Qt::DisplayRole:
+        switch (index.column()) {
+        case NameColumn:
+            return entry.name;
+        case SizeColumn:
+            return formatSize(entry.size, entry.isDir);
+        case ModifiedColumn:
+            if (entry.mtime <= 0)
+                return QString();
+            return QDateTime::fromSecsSinceEpoch(entry.mtime).toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+        case ModeColumn:
+            return entry.permissionsText();
+        default:
+            break;
+        }
+        return QVariant();
+    case Qt::DecorationRole:
+        if (index.column() == NameColumn)
+            return iconFor(entry.isDir);
+        return QVariant();
+    case Qt::TextAlignmentRole:
+        if (index.column() == SizeColumn)
+            return QVariant(int(Qt::AlignRight | Qt::AlignVCenter));
+        return QVariant(int(Qt::AlignLeft | Qt::AlignVCenter));
+    case Qt::ToolTipRole:
+        return QStringLiteral("%1\n%2\n权限 %3\n大小 %4 字节")
+            .arg(entry.path, entry.isDir ? QStringLiteral("目录") : QStringLiteral("文件"),
+                 entry.permissionsText(), QString::number(entry.size));
+    default:
+        return QVariant();
+    }
+}
+
+QVariant SftpModel::headerData(int section, Qt::Orientation orientation, int role) const
+{
+    if (orientation != Qt::Horizontal || role != Qt::DisplayRole)
+        return QVariant();
+    switch (section) {
+    case NameColumn:
+        return QStringLiteral("名称");
+    case SizeColumn:
+        return QStringLiteral("大小");
+    case ModifiedColumn:
+        return QStringLiteral("修改时间");
+    case ModeColumn:
+        return QStringLiteral("权限");
+    default:
+        return QVariant();
+    }
+}
+
+bool SftpModel::canFetchMore(const QModelIndex &parent) const
+{
+    if (parent.column() > 0)
+        return false;
+    const Node *node = nodeFromIndex(parent);
+    if (!node)
+        return false;
+    return node->entry.isDir && !node->fetched && !node->loading;
+}
+
+void SftpModel::fetchMore(const QModelIndex &parent)
+{
+    Node *node = nodeFromIndex(parent);
+    requestListing(node);
+}
+
+Qt::ItemFlags SftpModel::flags(const QModelIndex &index) const
+{
+    if (!index.isValid())
+        return Qt::NoItemFlags;
+    return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+}
+
+QString SftpModel::pathForIndex(const QModelIndex &index) const
+{
+    const Node *node = nodeFromIndex(index);
+    return node ? node->entry.path : QString();
+}
+
+QString SftpModel::nameForIndex(const QModelIndex &index) const
+{
+    const Node *node = nodeFromIndex(index);
+    return node ? node->entry.name : QString();
+}
+
+bool SftpModel::isDirIndex(const QModelIndex &index) const
+{
+    const Node *node = nodeFromIndex(index);
+    return node && node->entry.isDir;
+}
+
+void SftpModel::collectPath(Node *node, const QString &path, QVector<Node *> *out) const
+{
+    if (!node)
+        return;
+    if (node->entry.path == path)
+        out->append(node);
+    for (Node *child : node->children)
+        collectPath(child, path, out);
+}
+
+QModelIndex SftpModel::indexForPath(const QString &path) const
+{
+    QVector<Node *> nodes;
+    collectPath(m_root, path, &nodes);
+    if (nodes.isEmpty())
+        return QModelIndex();
+    return indexForNode(nodes.first());
+}
+
+} // namespace termdock

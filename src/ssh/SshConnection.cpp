@@ -1,0 +1,276 @@
+#include "ssh/SshConnection.h"
+
+#include <QByteArray>
+
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <mutex>
+
+namespace termdock {
+
+namespace {
+
+void ensureLibssh2()
+{
+    static std::once_flag once;
+    std::call_once(once, []() { libssh2_init(0); });
+}
+
+// keyboard-interactive 回调不携带 session 上下文，用 thread_local 传递密码：
+// 每个 SSH 连接都独占一个工作线程，因此这样是安全的。
+thread_local const char *g_keyboardPassword = nullptr;
+
+void kbdInteractiveCallback(const char * /*name*/, int /*name_len*/, const char * /*instruction*/,
+                            int /*instruction_len*/, int num_prompts,
+                            const LIBSSH2_USERAUTH_KBDINT_PROMPT * /*prompts*/,
+                            LIBSSH2_USERAUTH_KBDINT_RESPONSE *responses, void ** /*abstract*/)
+{
+    for (int i = 0; i < num_prompts; ++i) {
+        const size_t len = g_keyboardPassword ? strlen(g_keyboardPassword) : 0;
+        responses[i].text = static_cast<char *>(malloc(len + 1));
+        if (responses[i].text) {
+            if (len)
+                memcpy(responses[i].text, g_keyboardPassword, len);
+            responses[i].text[len] = '\0';
+            responses[i].length = static_cast<unsigned int>(len);
+        }
+    }
+}
+
+} // namespace
+
+SshConnection::~SshConnection()
+{
+    close();
+}
+
+void SshConnection::close()
+{
+    if (m_session) {
+        libssh2_session_disconnect_ex(m_session, SSH_DISCONNECT_BY_APPLICATION, "bye", "");
+        libssh2_session_free(m_session);
+        m_session = nullptr;
+    }
+    if (m_sock >= 0) {
+        ::close(m_sock);
+        m_sock = -1;
+    }
+}
+
+QString SshConnection::lastError(LIBSSH2_SESSION *session)
+{
+    if (!session)
+        return QStringLiteral("libssh2 会话无效");
+    char *message = nullptr;
+    int length = 0;
+    const int code = libssh2_session_last_error(session, &message, &length, 0);
+    const QString detail = message ? QString::fromUtf8(message, length) : QString();
+    return QStringLiteral("%1 (libssh2 %2)").arg(detail).arg(code);
+}
+
+bool SshConnection::waitSocket(int timeoutMs, bool forWrite)
+{
+    pollfd pfd{};
+    pfd.fd = m_sock;
+    pfd.events = forWrite ? POLLOUT : POLLIN;
+    const int rc = ::poll(&pfd, 1, timeoutMs);
+    if (rc <= 0)
+        return false;
+    return (pfd.revents & (forWrite ? POLLOUT : POLLIN)) != 0 || (pfd.revents & POLLHUP) != 0;
+}
+
+bool SshConnection::connectSocket(const QString &host, int port, int timeoutMs, QString *error)
+{
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo *result = nullptr;
+    const QByteArray hostName = host.toUtf8();
+    const QByteArray portStr = QByteArray::number(port);
+    if (getaddrinfo(hostName.constData(), portStr.constData(), &hints, &result) != 0 || !result) {
+        if (error)
+            *error = QStringLiteral("无法解析主机 %1").arg(host);
+        return false;
+    }
+
+    QString lastMessage = QStringLiteral("连接失败");
+    for (addrinfo *it = result; it; it = it->ai_next) {
+        const int fd = ::socket(it->ai_family, it->ai_socktype, it->ai_protocol);
+        if (fd < 0)
+            continue;
+        const int flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        int rc = ::connect(fd, it->ai_addr, it->ai_addrlen);
+        if (rc != 0 && errno == EINPROGRESS) {
+            pollfd pfd{};
+            pfd.fd = fd;
+            pfd.events = POLLOUT;
+            rc = ::poll(&pfd, 1, timeoutMs);
+            if (rc > 0) {
+                int soError = 0;
+                socklen_t len = sizeof(soError);
+                getsockopt(fd, SOL_SOCKET, SO_ERROR, &soError, &len);
+                rc = soError == 0 ? 0 : -1;
+                if (soError != 0)
+                    lastMessage = QStringLiteral("连接被拒绝：%1").arg(QString::fromLocal8Bit(strerror(soError)));
+            } else {
+                rc = -1;
+                lastMessage = QStringLiteral("连接超时（%1 秒）").arg(timeoutMs / 1000);
+            }
+        }
+        if (rc == 0) {
+            fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+            const int one = 1;
+            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+            setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+            m_sock = fd;
+            freeaddrinfo(result);
+            return true;
+        }
+        ::close(fd);
+    }
+    freeaddrinfo(result);
+    if (error)
+        *error = lastMessage;
+    return false;
+}
+
+bool SshConnection::handshake(int timeoutMs, QString *error)
+{
+    m_session = libssh2_session_init();
+    if (!m_session) {
+        if (error)
+            *error = QStringLiteral("初始化 libssh2 会话失败");
+        return false;
+    }
+    libssh2_session_set_blocking(m_session, 0);
+
+    const int deadlineMs = timeoutMs;
+    int waited = 0;
+    int rc = LIBSSH2_ERROR_EAGAIN;
+    while (rc == LIBSSH2_ERROR_EAGAIN && waited < deadlineMs) {
+        rc = libssh2_session_handshake(m_session, m_sock);
+        if (rc == LIBSSH2_ERROR_EAGAIN) {
+            waitSocket(100, false);
+            waited += 100;
+        }
+    }
+    if (rc != 0) {
+        if (error)
+            *error = QStringLiteral("SSH 握手失败：%1").arg(lastError(m_session));
+        return false;
+    }
+
+    size_t keyLen = 0;
+    int keyType = 0;
+    const char *hostKey = libssh2_session_hostkey(m_session, &keyLen, &keyType);
+    if (!hostKey) {
+        if (error)
+            *error = QStringLiteral("无法获取主机密钥");
+        return false;
+    }
+    const char *sha256 = libssh2_hostkey_hash(m_session, LIBSSH2_HOSTKEY_HASH_SHA256);
+    if (sha256) {
+        const QByteArray raw(sha256, 32);
+        m_fingerprint = QStringLiteral("SHA256:")
+            + QString::fromLatin1(raw.toBase64(QByteArray::OmitTrailingEquals));
+    }
+    (void)keyLen;
+    switch (keyType) {
+    case LIBSSH2_HOSTKEY_TYPE_RSA:
+        m_hostKeyType = QStringLiteral("ssh-rsa");
+        break;
+    case LIBSSH2_HOSTKEY_TYPE_DSS:
+        m_hostKeyType = QStringLiteral("ssh-dss");
+        break;
+    case LIBSSH2_HOSTKEY_TYPE_ECDSA_256:
+        m_hostKeyType = QStringLiteral("ecdsa-sha2-nistp256");
+        break;
+    case LIBSSH2_HOSTKEY_TYPE_ECDSA_384:
+        m_hostKeyType = QStringLiteral("ecdsa-sha2-nistp384");
+        break;
+    case LIBSSH2_HOSTKEY_TYPE_ECDSA_521:
+        m_hostKeyType = QStringLiteral("ecdsa-sha2-nistp521");
+        break;
+    case LIBSSH2_HOSTKEY_TYPE_ED25519:
+        m_hostKeyType = QStringLiteral("ssh-ed25519");
+        break;
+    default:
+        m_hostKeyType = QStringLiteral("unknown");
+        break;
+    }
+    return true;
+}
+
+bool SshConnection::authenticate(const SshParams &params, int timeoutMs, QString *error)
+{
+    const QByteArray user = params.user.toUtf8();
+    const QByteArray password = params.password.toUtf8();
+
+    int waited = 0;
+    int rc = LIBSSH2_ERROR_EAGAIN;
+    while (rc == LIBSSH2_ERROR_EAGAIN && waited < timeoutMs) {
+        rc = libssh2_userauth_password_ex(m_session, user.constData(), unsigned(user.size()),
+                                          password.constData(), unsigned(password.size()), nullptr);
+        if (rc == LIBSSH2_ERROR_EAGAIN) {
+            waitSocket(100, false);
+            waited += 100;
+        }
+    }
+    if (rc == 0)
+        return true;
+
+    // 记录密码认证的失败原因，后面若 keyboard-interactive 也失败，用它作为主提示
+    char *passwordMessage = nullptr;
+    int passwordMessageLength = 0;
+    libssh2_session_last_error(m_session, &passwordMessage, &passwordMessageLength, 0);
+    const QString passwordError = passwordMessage
+        ? QString::fromUtf8(passwordMessage, passwordMessageLength)
+        : QStringLiteral("未知原因");
+
+    // 密码不被接受时尝试 keyboard-interactive（部分服务器只开放该方式）
+    g_keyboardPassword = password.constData();
+    waited = 0;
+    rc = LIBSSH2_ERROR_EAGAIN;
+    while (rc == LIBSSH2_ERROR_EAGAIN && waited < timeoutMs) {
+        rc = libssh2_userauth_keyboard_interactive_ex(m_session, user.constData(), unsigned(user.size()),
+                                                      kbdInteractiveCallback);
+        if (rc == LIBSSH2_ERROR_EAGAIN) {
+            waitSocket(100, false);
+            waited += 100;
+        }
+    }
+    if (rc == 0)
+        return true;
+
+    g_keyboardPassword = nullptr;
+    if (error) {
+        *error = QStringLiteral("认证失败：用户名或密码不正确（%1）").arg(passwordError);
+    }
+    return false;
+}
+
+bool SshConnection::connectAndAuth(const SshParams &params, int timeoutMs, QString *error)
+{
+    ensureLibssh2();
+    if (!connectSocket(params.host, params.port, timeoutMs, error))
+        return false;
+    if (!handshake(timeoutMs, error)) {
+        close();
+        return false;
+    }
+    if (!authenticate(params, timeoutMs, error)) {
+        close();
+        return false;
+    }
+    return true;
+}
+
+} // namespace termdock
