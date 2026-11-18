@@ -2,9 +2,9 @@
 
 #include "app/AppConfig.h"
 
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
-#include <QFileInfo>
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -15,6 +15,8 @@ namespace {
 constexpr int kKeyLength = 32;
 constexpr int kIvLength = 12;
 constexpr int kTagLength = 16;
+constexpr int kSaltLength = 16;
+constexpr int kKdfIterations = 210000;
 constexpr char kPrefix[] = "gcm1:";
 } // namespace
 
@@ -47,7 +49,7 @@ QByteArray Crypto::masterKey(QString *error)
 
     if (!AppConfig::ensureConfigDir()) {
         if (error)
-            *error = QStringLiteral("无法创建配置目录 %1").arg(AppConfig::configDir());
+            *error = QStringLiteral("无法创建数据目录 %1").arg(AppConfig::dataDir());
         return QByteArray();
     }
     const QByteArray key = randomBytes(kKeyLength);
@@ -67,13 +69,15 @@ QByteArray Crypto::masterKey(QString *error)
     return key;
 }
 
-QString Crypto::encrypt(const QString &plain, QString *error)
+QString Crypto::encryptWithKey(const QByteArray &key, const QByteArray &plain, QString *error)
 {
     if (plain.isEmpty())
         return QString();
-    const QByteArray key = masterKey(error);
-    if (key.isEmpty())
+    if (key.size() != kKeyLength) {
+        if (error)
+            *error = QStringLiteral("密钥长度不正确");
         return QString();
+    }
 
     const QByteArray iv = randomBytes(kIvLength);
     if (iv.isEmpty()) {
@@ -98,10 +102,9 @@ QString Crypto::encrypt(const QString &plain, QString *error)
     ok = ok && EVP_EncryptInit_ex(ctx, nullptr, nullptr,
                                   reinterpret_cast<const unsigned char *>(key.constData()),
                                   reinterpret_cast<const unsigned char *>(iv.constData())) == 1;
-    const QByteArray plainBytes = plain.toUtf8();
     ok = ok && EVP_EncryptUpdate(ctx, reinterpret_cast<unsigned char *>(cipher.data()), &len,
-                                 reinterpret_cast<const unsigned char *>(plainBytes.constData()),
-                                 plainBytes.size()) == 1;
+                                 reinterpret_cast<const unsigned char *>(plain.constData()),
+                                 plain.size()) == 1;
     total = len;
     ok = ok && EVP_EncryptFinal_ex(ctx, reinterpret_cast<unsigned char *>(cipher.data()) + total,
                                    &len) == 1;
@@ -119,24 +122,26 @@ QString Crypto::encrypt(const QString &plain, QString *error)
     return QString::fromLatin1(kPrefix) + QString::fromLatin1(packed.toBase64());
 }
 
-QString Crypto::decrypt(const QString &encoded, QString *error)
+QByteArray Crypto::decryptWithKey(const QByteArray &key, const QString &encoded, QString *error)
 {
     if (encoded.isEmpty())
-        return QString();
+        return QByteArray();
+    if (key.size() != kKeyLength) {
+        if (error)
+            *error = QStringLiteral("密钥长度不正确");
+        return QByteArray();
+    }
     if (!encoded.startsWith(QLatin1String(kPrefix))) {
         if (error)
-            *error = QStringLiteral("密码格式无法识别");
-        return QString();
+            *error = QStringLiteral("数据格式无法识别");
+        return QByteArray();
     }
     const QByteArray packed = QByteArray::fromBase64(encoded.mid(int(sizeof(kPrefix) - 1)).toLatin1());
     if (packed.size() < kIvLength + kTagLength) {
         if (error)
-            *error = QStringLiteral("密码数据不完整");
-        return QString();
+            *error = QStringLiteral("数据不完整");
+        return QByteArray();
     }
-    const QByteArray key = masterKey(error);
-    if (key.isEmpty())
-        return QString();
 
     const QByteArray iv = packed.left(kIvLength);
     const QByteArray tag = packed.right(kTagLength);
@@ -146,7 +151,7 @@ QString Crypto::decrypt(const QString &encoded, QString *error)
     if (!ctx) {
         if (error)
             *error = QStringLiteral("EVP_CIPHER_CTX_new 失败");
-        return QString();
+        return QByteArray();
     }
     QByteArray plain(cipher.size() + EVP_MAX_BLOCK_LENGTH, Qt::Uninitialized);
     int len = 0;
@@ -169,11 +174,95 @@ QString Crypto::decrypt(const QString &encoded, QString *error)
 
     if (!ok) {
         if (error)
-            *error = QStringLiteral("密码解密失败（密钥可能已变更）");
-        return QString();
+            *error = QStringLiteral("解密失败（口令或密钥不正确）");
+        return QByteArray();
     }
     plain.resize(total);
-    return QString::fromUtf8(plain);
+    return plain;
+}
+
+QString Crypto::encrypt(const QString &plain, QString *error)
+{
+    if (plain.isEmpty())
+        return QString();
+    const QByteArray key = masterKey(error);
+    if (key.isEmpty())
+        return QString();
+    return encryptWithKey(key, plain.toUtf8(), error);
+}
+
+QString Crypto::decrypt(const QString &encoded, QString *error)
+{
+    const QByteArray key = masterKey(error);
+    if (key.isEmpty())
+        return QString();
+    return QString::fromUtf8(decryptWithKey(key, encoded, error));
+}
+
+QByteArray Crypto::deriveKey(const QByteArray &passphrase, const QByteArray &salt, int iterations)
+{
+    QByteArray out(kKeyLength, Qt::Uninitialized);
+    const int rc = PKCS5_PBKDF2_HMAC(passphrase.constData(), passphrase.size(),
+                                     reinterpret_cast<const unsigned char *>(salt.constData()),
+                                     salt.size(), iterations, EVP_sha256(), kKeyLength,
+                                     reinterpret_cast<unsigned char *>(out.data()));
+    if (rc != 1)
+        return QByteArray();
+    return out;
+}
+
+QJsonObject Crypto::wrapMasterKey(const QString &passphrase, QString *error)
+{
+    if (passphrase.size() < 6) {
+        if (error)
+            *error = QStringLiteral("恢复口令至少 6 个字符");
+        return QJsonObject();
+    }
+    const QByteArray key = masterKey(error);
+    if (key.isEmpty())
+        return QJsonObject();
+
+    const QByteArray salt = randomBytes(kSaltLength);
+    const QByteArray kek = deriveKey(passphrase.toUtf8(), salt, kKdfIterations);
+    if (kek.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("口令派生失败");
+        return QJsonObject();
+    }
+    const QString wrapped = encryptWithKey(kek, key, error);
+    if (wrapped.isEmpty())
+        return QJsonObject();
+
+    QJsonObject payload;
+    payload.insert(QStringLiteral("version"), 1);
+    payload.insert(QStringLiteral("kdf"), QStringLiteral("pbkdf2-sha256"));
+    payload.insert(QStringLiteral("iterations"), kKdfIterations);
+    payload.insert(QStringLiteral("salt"), QString::fromLatin1(salt.toBase64()));
+    payload.insert(QStringLiteral("wrapped"), wrapped);
+    payload.insert(QStringLiteral("createdAt"),
+                   QString::number(QDateTime::currentSecsSinceEpoch()));
+    return payload;
+}
+
+QByteArray Crypto::unwrapMasterKey(const QJsonObject &payload, const QString &passphrase,
+                                   QString *error)
+{
+    const QByteArray salt = QByteArray::fromBase64(
+        payload.value(QStringLiteral("salt")).toString().toLatin1());
+    const int iterations = payload.value(QStringLiteral("iterations")).toInt(kKdfIterations);
+    const QString wrapped = payload.value(QStringLiteral("wrapped")).toString();
+    if (salt.isEmpty() || wrapped.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("恢复数据不完整");
+        return QByteArray();
+    }
+    const QByteArray kek = deriveKey(passphrase.toUtf8(), salt, iterations);
+    if (kek.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("口令派生失败");
+        return QByteArray();
+    }
+    return decryptWithKey(kek, wrapped, error);
 }
 
 } // namespace termdock

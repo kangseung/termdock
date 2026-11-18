@@ -40,7 +40,6 @@ signals:
     void gridResized(int cols, int rows);
     void titleChanged(const QString &title);
     void bell();
-    void scrollbackChanged(int lines);
     void zoomRequested(int delta);
 
 protected:
@@ -54,6 +53,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
+    void leaveEvent(QEvent *event) override;
     void focusInEvent(QFocusEvent *event) override;
     void focusOutEvent(QFocusEvent *event) override;
     void contextMenuEvent(QContextMenuEvent *event) override;
@@ -71,6 +71,14 @@ private:
     void selectWordAt(int line, int col);
     void selectLineAt(int line);
     void scrollBy(int lines);
+    // 自绘滚动条
+    QRectF scrollBarTrack() const;
+    QRectF scrollBarThumb() const;
+    bool scrollBarVisible() const;
+    void scrollToOffsetFromY(qreal y);
+    // 鼠标上报（xterm 1000/1002/1003 + SGR 1006）
+    bool reportMouse(QMouseEvent *event, bool isRelease);
+    bool reportWheel(QWheelEvent *event);
 
     VtScreen m_screen;
     VtParser m_parser;
@@ -80,8 +88,10 @@ private:
     qreal m_cellW = 8;
     qreal m_cellH = 16;
     qreal m_ascent = 12;
-    int m_padX = 8;
-    int m_padY = 6;
+    qreal m_descent = 4;
+    qreal m_baseline = 15; // 行内基线偏移（含垂直居中补偿）
+    int m_padX = 10;
+    int m_padY = 8;
 
     bool m_connected = false;
     bool m_blinkOn = true;
@@ -97,8 +107,11 @@ private:
     int m_selEndLine = 0;
     int m_selEndCol = 0;
     QPoint m_dragOrigin;
-    QTimer *m_dragTimer = nullptr;
-    int m_dragDelta = 0;
+    bool m_mouseReportedPress = false;
+
+    bool m_draggingThumb = false;
+    bool m_scrollBarHovered = false;
+    qreal m_dragGrabOffset = 0;
 };
 
 } // namespace termdock

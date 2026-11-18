@@ -66,8 +66,11 @@ void TerminalWidget::updateMetrics()
     m_cellW = fm.horizontalAdvance(QStringLiteral("0123456789")) / 10.0;
     if (m_cellW <= 0)
         m_cellW = fm.averageCharWidth();
-    m_cellH = std::ceil(fm.lineSpacing());
+    // 行高比行距多 2px，屏幕看起来不挤
+    m_cellH = std::ceil(fm.lineSpacing()) + 2;
     m_ascent = fm.ascent();
+    m_descent = fm.descent();
+    m_baseline = (m_cellH - (m_ascent + m_descent)) / 2.0 + m_ascent;
 }
 
 void TerminalWidget::applyFont()
@@ -79,7 +82,8 @@ void TerminalWidget::applyFont()
 
 void TerminalWidget::recomputeGrid()
 {
-    const int usableW = std::max(1, width() - 2 * m_padX);
+    // 右侧留 10px 给滚动条，避免最后一列被滚动条压住
+    const int usableW = std::max(1, width() - 2 * m_padX - 10);
     const int usableH = std::max(1, height() - 2 * m_padY);
     const int cols = std::max(kMinCols, int(usableW / m_cellW));
     const int rows = std::max(kMinRows, int(usableH / m_cellH));
@@ -106,6 +110,8 @@ void TerminalWidget::feed(const QByteArray &data)
 void TerminalWidget::setConnected(bool connected)
 {
     m_connected = connected;
+    setCursor(m_screen.mouseMode() == VtScreen::MouseMode::Off ? Qt::IBeamCursor
+                                                               : Qt::ArrowCursor);
     if (connected) {
         m_statusText.clear();
     }
@@ -245,6 +251,44 @@ void TerminalWidget::scrollBy(int lines)
     m_screen.setScrollOffset(m_screen.scrollOffset() + lines);
 }
 
+QRectF TerminalWidget::scrollBarTrack() const
+{
+    constexpr qreal kWidth = 6;
+    return QRectF(width() - kWidth - 3, m_padY, kWidth, height() - 2 * m_padY);
+}
+
+bool TerminalWidget::scrollBarVisible() const
+{
+    return m_screen.scrollbackCount() > 0
+        && (m_screen.scrollOffset() > 0 || m_scrollBarHovered || m_draggingThumb);
+}
+
+QRectF TerminalWidget::scrollBarThumb() const
+{
+    const QRectF track = scrollBarTrack();
+    const int total = m_screen.totalLines();
+    if (total <= 0)
+        return QRectF();
+    const qreal ratio = qreal(m_screen.rows()) / qreal(total);
+    const qreal thumbHeight = std::clamp(track.height() * ratio, 28.0, track.height());
+    const int maxOffset = m_screen.scrollbackCount();
+    const qreal pos = maxOffset > 0 ? qreal(maxOffset - m_screen.scrollOffset()) / qreal(maxOffset) : 0.0;
+    const qreal thumbTop = track.top() + (track.height() - thumbHeight) * pos;
+    return QRectF(track.left(), thumbTop, track.width(), thumbHeight);
+}
+
+void TerminalWidget::scrollToOffsetFromY(qreal y)
+{
+    const QRectF track = scrollBarTrack();
+    const QRectF thumb = scrollBarThumb();
+    const qreal span = track.height() - thumb.height();
+    if (span <= 0)
+        return;
+    const qreal ratio = std::clamp((y - m_dragGrabOffset - track.top()) / span, 0.0, 1.0);
+    m_screen.setScrollOffset(int(std::lround((1.0 - ratio) * m_screen.scrollbackCount())));
+    update();
+}
+
 void TerminalWidget::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event);
@@ -252,6 +296,7 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
     QPainter p(this);
     p.fillRect(rect(), theme.background());
     p.setRenderHint(QPainter::TextAntialiasing, true);
+    p.setRenderHint(QPainter::Antialiasing, true);
 
     const int cols = m_screen.cols();
     const int rows = m_screen.rows();
@@ -270,7 +315,7 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
     for (int row = 0; row < rows; ++row) {
         const int absLine = m_screen.absoluteLineOf(row);
         const qreal y = m_padY + row * m_cellH;
-        const qreal baseY = y + m_ascent; // 每行自己的基线，别用统一基线
+        const qreal baseY = y + m_baseline; // 每行自己的基线
 
         int col = 0;
         while (col < cols) {
@@ -296,78 +341,56 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
                 fg = bg;
 
             const int width = (cell.attr & AttrWide) ? 2 : 1;
+            const quint16 styleMask = quint16(AttrBold | AttrDim | AttrItalic | AttrUnderline
+                                              | AttrReverse | AttrHidden | AttrStrike);
             // 找同色同属性的连续段
             int end = col + width;
             while (end < cols) {
                 const VtCell &next = m_screen.cellAtAbsolute(absLine, end);
-                QColor nfg = next.fg.resolve(theme.palette(), theme.foreground());
-                QColor nbg = next.bg.resolve(theme.palette(), theme.background());
-                const quint16 styleBits = next.attr & quint16(AttrBold | AttrDim | AttrItalic
-                                                              | AttrUnderline | AttrReverse
-                                                              | AttrHidden | AttrStrike);
-                if (nbg != bg || nfg != fg || styleBits != (cell.attr & quint16(AttrBold | AttrDim
-                                                                                | AttrItalic
-                                                                                | AttrUnderline
-                                                                                | AttrReverse
-                                                                                | AttrHidden
-                                                                                | AttrStrike)))
+                const QColor nfg = next.fg.resolve(theme.palette(), theme.foreground());
+                const QColor nbg = next.bg.resolve(theme.palette(), theme.background());
+                if (nbg != bg || nfg != fg
+                    || (next.attr & styleMask) != (cell.attr & styleMask))
                     break;
                 end += (next.attr & AttrWide) ? 2 : 1;
             }
 
-            const qreal x = m_padX + col * m_cellW;
+            const qreal x = std::round(m_padX + col * m_cellW);
             const qreal w = (end - col) * m_cellW;
             if (bg != theme.background())
                 p.fillRect(QRectF(x, y, w, m_cellH), bg);
 
             // 选区高亮
-            if (selVisible) {
+            if (selVisible && absLine >= selSl && absLine <= selEl) {
                 const int from = std::max(col, (absLine == selSl) ? selSc : 0);
                 const int to = std::min(end - 1, (absLine == selEl) ? selEc : cols - 1);
-                if (absLine >= selSl && absLine <= selEl && to >= from) {
-                    p.fillRect(QRectF(m_padX + from * m_cellW, y, (to - from + 1) * m_cellW, m_cellH),
+                if (to >= from) {
+                    p.fillRect(QRectF(std::round(m_padX + from * m_cellW), y,
+                                      (to - from + 1) * m_cellW, m_cellH),
                                theme.selection());
                 }
             }
 
-            // 文本：连续的窄字符批量绘制，宽字符单独居中
+            // 文本：逐格按 cellW 精确定位绘制。
+            // 早期用「连续字符批量 drawText」在字体 advance 与 cellW 不完全相等时
+            // 会产生累积漂移（长行越到后面越错位），改成逐格定位后永不错位。
             if (fg != bg) {
-                QString run;
-                int runStart = col;
+                p.setFont((cell.attr & AttrBold) ? m_boldFont : m_font);
+                p.setPen(fg);
                 for (int c = col; c < end; ++c) {
                     const VtCell &cc = m_screen.cellAtAbsolute(absLine, c);
-                    if (cc.attr & AttrWideTail)
+                    if (cc.ch == 0 || cc.ch == U' ')
                         continue;
-                    if (cc.attr & AttrWide) {
-                        if (!run.isEmpty()) {
-                            p.setFont((cell.attr & AttrBold) ? m_boldFont : m_font);
-                            p.setPen(fg);
-                            p.drawText(QPointF(m_padX + runStart * m_cellW, baseY), run);
-                            run.clear();
-                        }
-                        p.setFont((cell.attr & AttrBold) ? m_boldFont : m_font);
-                        p.setPen(fg);
-                        p.drawText(QPointF(m_padX + c * m_cellW, baseY),
-                                   QString::fromUcs4(&cc.ch, 1));
-                        runStart = c + 2;
-                        continue;
-                    }
-                    if (run.isEmpty())
-                        runStart = c;
-                    run.append(cc.ch ? QString::fromUcs4(&cc.ch, 1) : QStringLiteral(" "));
-                }
-                if (!run.isEmpty()) {
-                    p.setFont((cell.attr & AttrBold) ? m_boldFont : m_font);
-                    p.setPen(fg);
-                    p.drawText(QPointF(m_padX + runStart * m_cellW, baseY), run);
+                    p.drawText(QPointF(std::round(m_padX + c * m_cellW), baseY),
+                               QString::fromUcs4(&cc.ch, 1));
                 }
                 if (cell.attr & AttrUnderline) {
                     p.setPen(fg);
-                    p.drawLine(QPointF(x, y + m_cellH - 1.5), QPointF(x + w, y + m_cellH - 1.5));
+                    p.drawLine(QPointF(x, y + m_cellH - 2), QPointF(x + w - 1, y + m_cellH - 2));
                 }
                 if (cell.attr & AttrStrike) {
                     p.setPen(fg);
-                    p.drawLine(QPointF(x, y + m_cellH * 0.55), QPointF(x + w, y + m_cellH * 0.55));
+                    p.drawLine(QPointF(x, y + m_cellH * 0.55), QPointF(x + w - 1, y + m_cellH * 0.55));
                 }
             }
             col = end;
@@ -380,15 +403,18 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
     if (showCursor) {
         const qreal x = m_padX + m_screen.cursorCol() * m_cellW;
         const qreal y = m_padY + m_screen.cursorRow() * m_cellH;
-        QColor cursorColor = theme.cursor();
-        cursorColor.setAlpha(200);
-        p.fillRect(QRectF(x, y, m_cellW, m_cellH), cursorColor);
         const VtCell &cell = m_screen.cellAtAbsolute(m_screen.absoluteLineOf(m_screen.cursorRow()),
                                                     m_screen.cursorCol());
-        if (cell.ch && cell.ch != U' ') {
+        QColor cursorColor = theme.cursor();
+        cursorColor.setAlpha(m_hasFocus ? 190 : 90);
+        p.setPen(Qt::NoPen);
+        p.setBrush(cursorColor);
+        const qreal cursorW = (cell.attr & AttrWide) ? m_cellW * 2 : m_cellW;
+        p.drawRoundedRect(QRectF(x, y + 1.5, cursorW, m_cellH - 3), 2.5, 2.5);
+        if (cell.ch && cell.ch != U' ' && m_hasFocus) {
             p.setFont(m_font);
             p.setPen(theme.background());
-            p.drawText(QPointF(x, y + m_ascent), QString::fromUcs4(&cell.ch, 1));
+            p.drawText(QPointF(std::round(x), y + m_baseline), QString::fromUcs4(&cell.ch, 1));
         }
     }
 
@@ -397,12 +423,14 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
         const qreal x = m_padX + m_screen.cursorCol() * m_cellW;
         const qreal y = m_padY + m_screen.cursorRow() * m_cellH;
         const QFontMetricsF fm(m_font);
-        const qreal w = fm.horizontalAdvance(m_preedit) + 4;
-        p.fillRect(QRectF(x, y, w, m_cellH), theme.panelBackground());
+        const qreal w = fm.horizontalAdvance(m_preedit) + 6;
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0x10, 0x13, 0x1a, 235));
+        p.drawRoundedRect(QRectF(x, y, w, m_cellH), 3, 3);
         p.setFont(m_font);
         p.setPen(theme.accent());
-        p.drawText(QPointF(x + 2, y + m_ascent), m_preedit);
-        p.drawLine(QPointF(x + 2, y + m_cellH - 2), QPointF(x + w - 2, y + m_cellH - 2));
+        p.drawText(QPointF(x + 3, y + m_baseline), m_preedit);
+        p.drawLine(QPointF(x + 3, y + m_cellH - 2), QPointF(x + w - 3, y + m_cellH - 2));
     }
 
     // 未连接提示
@@ -411,12 +439,45 @@ void TerminalWidget::paintEvent(QPaintEvent *event)
         p.setPen(theme.mutedText());
         const QString text = m_statusText.isEmpty() ? QStringLiteral("未连接") : m_statusText;
         p.drawText(rect(), Qt::AlignCenter, text);
-    } else if (m_screen.scrollOffset() > 0) {
-        p.setFont(QFont(theme.terminalFont().family(), 9));
+    }
+
+    // 顶部渐隐阴影：提示上面还有历史可滚
+    if (m_screen.scrollOffset() > 0) {
+        QLinearGradient shadow(0, 0, 0, m_cellH);
+        shadow.setColorAt(0.0, QColor(0, 0, 0, 110));
+        shadow.setColorAt(1.0, QColor(0, 0, 0, 0));
+        p.fillRect(QRectF(0, 0, width(), m_cellH), shadow);
+    }
+
+    // 自绘滚动条
+    if (scrollBarVisible()) {
+        p.setPen(Qt::NoPen);
+        QColor trackColor = theme.mutedText();
+        trackColor.setAlpha(28);
+        p.setBrush(trackColor);
+        p.drawRoundedRect(scrollBarTrack(), 3, 3);
+        QColor thumbColor = theme.foreground();
+        thumbColor.setAlpha(m_draggingThumb ? 190 : 120);
+        p.setBrush(thumbColor);
+        p.drawRoundedRect(scrollBarThumb(), 3, 3);
+    }
+
+    // 滚回位置小提示
+    if (m_connected && m_screen.scrollOffset() > 0) {
+        const QString text = QStringLiteral("↑ 滚回 %1 / %2 行")
+                                 .arg(m_screen.scrollOffset())
+                                 .arg(m_screen.scrollbackCount());
+        QFont chipFont = m_font;
+        chipFont.setPointSizeF(std::max(7.0, chipFont.pointSizeF() - 2.0));
+        p.setFont(chipFont);
+        const QFontMetricsF fm(chipFont);
+        const qreal chipW = fm.horizontalAdvance(text) + 18;
+        const QRectF chip(width() - chipW - 14, height() - 26, chipW, 18);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0, 0, 0, 120));
+        p.drawRoundedRect(chip, 9, 9);
         p.setPen(theme.mutedText());
-        p.drawText(QRect(m_padX, height() - m_padY - 14, width() - 2 * m_padX, 14),
-                   Qt::AlignRight | Qt::AlignVCenter,
-                   QStringLiteral("滚回 %1 行 · 滚到底部继续").arg(m_screen.scrollOffset()));
+        p.drawText(chip, Qt::AlignCenter, text);
     }
 }
 
@@ -427,6 +488,12 @@ void TerminalWidget::keyPressEvent(QKeyEvent *event)
     const bool ctrl = mods.testFlag(Qt::ControlModifier);
     const bool shift = mods.testFlag(Qt::ShiftModifier);
     const bool alt = mods.testFlag(Qt::AltModifier);
+
+    // 正在回看历史时一敲键就回到最新输出，符合直觉
+    if (m_screen.scrollOffset() > 0) {
+        m_screen.scrollToBottom();
+        update();
+    }
 
     if (ctrl && shift && key == Qt::Key_C) {
         copySelection();
@@ -584,6 +651,33 @@ QVariant TerminalWidget::inputMethodQuery(Qt::InputMethodQuery query) const
 void TerminalWidget::mousePressEvent(QMouseEvent *event)
 {
     setFocus(Qt::MouseFocusReason);
+
+    // 先处理滚动条拖动
+    if (event->button() == Qt::LeftButton && scrollBarVisible()
+        && scrollBarTrack().adjusted(-6, 0, 4, 0).contains(event->position())) {
+        const QRectF thumb = scrollBarThumb();
+        m_draggingThumb = true;
+        if (thumb.contains(event->position()))
+            m_dragGrabOffset = event->position().y() - thumb.top();
+        else
+            m_dragGrabOffset = thumb.height() / 2.0;
+        scrollToOffsetFromY(event->position().y());
+        return;
+    }
+
+    if (event->button() != Qt::LeftButton && m_screen.mouseMode() != VtScreen::MouseMode::Off) {
+        if (reportMouse(event, false)) {
+            m_mouseReportedPress = true;
+            return;
+        }
+    }
+    if (event->button() == Qt::LeftButton) {
+        if (reportMouse(event, false)) {
+            m_mouseReportedPress = true;
+            return;
+        }
+    }
+
     const int absLine = m_screen.absoluteLineOf(rowAt(int(event->position().y())));
     const int col = colAt(int(event->position().x()));
 
@@ -610,6 +704,23 @@ void TerminalWidget::mousePressEvent(QMouseEvent *event)
 
 void TerminalWidget::mouseMoveEvent(QMouseEvent *event)
 {
+    if (m_draggingThumb) {
+        scrollToOffsetFromY(event->position().y());
+        return;
+    }
+    const VtScreen::MouseMode mouseMode = m_screen.mouseMode();
+    if (mouseMode == VtScreen::MouseMode::Move
+        || (mouseMode == VtScreen::MouseMode::Drag && event->buttons() != Qt::NoButton)) {
+        if (reportMouse(event, false))
+            return;
+    }
+
+    const bool hovered = m_screen.scrollbackCount() > 0
+        && scrollBarTrack().adjusted(-6, 0, 4, 0).contains(event->position());
+    if (hovered != m_scrollBarHovered) {
+        m_scrollBarHovered = hovered;
+        update();
+    }
     if (!m_selecting)
         return;
     const int y = int(event->position().y());
@@ -629,6 +740,16 @@ void TerminalWidget::mouseMoveEvent(QMouseEvent *event)
 void TerminalWidget::mouseReleaseEvent(QMouseEvent *event)
 {
     Q_UNUSED(event);
+    if (m_draggingThumb) {
+        m_draggingThumb = false;
+        update();
+        return;
+    }
+    if (m_mouseReportedPress) {
+        m_mouseReportedPress = false;
+        reportMouse(event, true);
+        return;
+    }
     if (!m_selecting)
         return;
     // 单击（无拖拽）视为取消选区
@@ -649,6 +770,89 @@ void TerminalWidget::mouseDoubleClickEvent(QMouseEvent *event)
     selectWordAt(absLine, col);
 }
 
+bool TerminalWidget::reportMouse(QMouseEvent *event, bool isRelease)
+{
+    const VtScreen::MouseMode mode = m_screen.mouseMode();
+    if (mode == VtScreen::MouseMode::Off || !m_connected)
+        return false;
+    // 按住 Shift 时强制本地选区，这是 xterm 的惯例
+    if (event->modifiers().testFlag(Qt::ShiftModifier))
+        return false;
+
+    int button = 0;
+    switch (event->button()) {
+    case Qt::LeftButton:
+        button = 0;
+        break;
+    case Qt::MiddleButton:
+        button = 1;
+        break;
+    case Qt::RightButton:
+        button = 2;
+        break;
+    default:
+        if (event->type() == QEvent::MouseMove)
+            button = 3; // 纯移动（无按键）
+        break;
+    }
+
+    int modifiers = 0;
+    if (event->modifiers().testFlag(Qt::ShiftModifier))
+        modifiers |= 4;
+    if (event->modifiers().testFlag(Qt::AltModifier))
+        modifiers |= 8;
+    if (event->modifiers().testFlag(Qt::ControlModifier))
+        modifiers |= 16;
+
+    const int row = rowAt(int(event->position().y()));
+    const int col = colAt(int(event->position().x()));
+    const quint64 code = quint64(button | modifiers | (isRelease && !m_screen.sgrMouse() ? 3 : 0));
+
+    if (m_screen.sgrMouse()) {
+        const QByteArray sequence = "\x1b[<" + QByteArray::number(code) + ";"
+            + QByteArray::number(col + 1) + ";" + QByteArray::number(row + 1)
+            + (isRelease ? "m" : "M");
+        sendBytes(sequence);
+    } else {
+        QByteArray sequence = "\x1b[M";
+        sequence.append(char(32 + int(code & 0xFF)));
+        sequence.append(char(32 + std::min(255, col + 1)));
+        sequence.append(char(32 + std::min(255, row + 1)));
+        sendBytes(sequence);
+    }
+    return true;
+}
+
+bool TerminalWidget::reportWheel(QWheelEvent *event)
+{
+    if (m_screen.mouseMode() == VtScreen::MouseMode::Off || !m_connected)
+        return false;
+    if (event->modifiers().testFlag(Qt::ShiftModifier))
+        return false;
+    const int delta = event->angleDelta().y();
+    if (delta == 0)
+        return false;
+    const int button = delta > 0 ? 64 : 65;
+    int modifiers = 0;
+    if (event->modifiers().testFlag(Qt::AltModifier))
+        modifiers |= 8;
+    if (event->modifiers().testFlag(Qt::ControlModifier))
+        modifiers |= 16;
+    const int row = rowAt(int(event->position().y()));
+    const int col = colAt(int(event->position().x()));
+    if (m_screen.sgrMouse()) {
+        sendBytes("\x1b[<" + QByteArray::number(button | modifiers) + ";"
+                  + QByteArray::number(col + 1) + ";" + QByteArray::number(row + 1) + "M");
+    } else {
+        QByteArray sequence = "\x1b[M";
+        sequence.append(char(32 + (button | modifiers)));
+        sequence.append(char(32 + std::min(255, col + 1)));
+        sequence.append(char(32 + std::min(255, row + 1)));
+        sendBytes(sequence);
+    }
+    return true;
+}
+
 void TerminalWidget::wheelEvent(QWheelEvent *event)
 {
     const int delta = event->angleDelta().y();
@@ -658,10 +862,20 @@ void TerminalWidget::wheelEvent(QWheelEvent *event)
         event->accept();
         return;
     }
-    if (delta > 0)
-        scrollBy(3);
-    else if (delta < 0)
-        scrollBy(-3);
+    if (reportWheel(event)) {
+        event->accept();
+        return;
+    }
+    const QPoint pixel = event->pixelDelta();
+    if (!pixel.isNull()) {
+        // 触控板：按像素滚动，手感更顺
+        if (pixel.y() != 0)
+            scrollBy(int(std::lround(-pixel.y() / m_cellH)) != 0
+                         ? int(std::lround(-pixel.y() / m_cellH))
+                         : (pixel.y() > 0 ? -1 : 1));
+    } else if (delta != 0) {
+        scrollBy(delta > 0 ? 3 : -3);
+    }
     event->accept();
 }
 
@@ -670,6 +884,15 @@ void TerminalWidget::focusInEvent(QFocusEvent *event)
     QWidget::focusInEvent(event);
     m_hasFocus = true;
     update();
+}
+
+void TerminalWidget::leaveEvent(QEvent *event)
+{
+    QWidget::leaveEvent(event);
+    if (m_scrollBarHovered) {
+        m_scrollBarHovered = false;
+        update();
+    }
 }
 
 void TerminalWidget::focusOutEvent(QFocusEvent *event)

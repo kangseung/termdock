@@ -106,7 +106,10 @@ void SessionPanel::setupUi()
     QFont titleFont = title->font();
     titleFont.setBold(true);
     title->setFont(titleFont);
-    m_newButton = new QPushButton(QStringLiteral("+ 新建"), this);
+    m_newButton = new QPushButton(QStringLiteral("+"), this);
+    m_newButton->setObjectName(QStringLiteral("newSession"));
+    m_newButton->setToolTip(QStringLiteral("新建会话"));
+    m_newButton->setFixedSize(30, 26);
     m_newButton->setCursor(Qt::PointingHandCursor);
     header->addWidget(title);
     header->addStretch(1);

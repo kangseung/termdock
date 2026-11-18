@@ -9,6 +9,7 @@
 class QAction;
 class QLabel;
 class QSplitter;
+class QStackedWidget;
 class QTabWidget;
 
 namespace termdock {
@@ -61,6 +62,7 @@ private:
     void activateSessionFromPanel(const QString &id);
     void closePage(int tabIndex);
     void onTabChanged(int index);
+    void updateTabPlaceholder();
     void onShellConnected(Page *page, const QString &fingerprint, const QString &hostKeyType);
     void onShellFailed(Page *page, const QString &message);
     void onShellClosed(Page *page, const QString &reason);
@@ -76,6 +78,7 @@ private:
     SessionPanel *m_sessionPanel = nullptr;
     FileTreePanel *m_filePanel = nullptr;
     QTabWidget *m_tabs = nullptr;
+    QStackedWidget *m_tabStack = nullptr;
     QSplitter *m_splitter = nullptr;
     QLabel *m_statusInfo = nullptr;
     QAction *m_showSessionPanelAction = nullptr;

@@ -63,20 +63,42 @@ void VtScreen::resize(int cols, int rows)
 
     const int oldRows = m_rows;
     for (Buffer *buf : {&m_primary, &m_alt}) {
-        for (auto &line : buf->lines) {
+        for (auto &line : buf->lines)
             line.cells.resize(size_t(cols));
-        }
+
         if (rows > oldRows) {
-            buf->lines.resize(size_t(rows));
-            for (int r = oldRows; r < rows; ++r) {
-                buf->lines[size_t(r)].cells.assign(size_t(cols), VtCell());
+            // 变大：优先从滚回里把内容拉回来，保持视口底部是同一行，
+            // 否则一放大就凭空多出几行空白。
+            const int grow = rows - oldRows;
+            int pulled = 0;
+            while (pulled < grow && !buf->scrollback.empty()) {
+                if (buf == &m_primary || m_altActive) {
+                    buf->lines.insert(buf->lines.begin(), buf->scrollback.back());
+                    buf->scrollback.pop_back();
+                    ++pulled;
+                } else {
+                    break;
+                }
             }
+            buf->lines.insert(buf->lines.begin(), size_t(grow - pulled), VtLine());
+            buf->lines.resize(size_t(rows));
+            for (auto &line : buf->lines)
+                line.cells.resize(size_t(cols), VtCell());
         } else if (rows < oldRows) {
-            // 缩小：把顶部多余的行推进滚回，保留用户正在看的内容
+            // 变小：从顶部丢行。只有真的有内容且是主屏时才进滚回，
+            // 空白行直接丢掉，避免"滚到顶还有几行空白"的错觉。
             const int drop = oldRows - rows;
             for (int i = 0; i < drop; ++i) {
-                if (!m_altActive && buf == &m_primary) {
-                    buf->scrollback.push_back(buf->lines[0]);
+                const VtLine &top = buf->lines.front();
+                bool hasContent = false;
+                for (const VtCell &cell : top.cells) {
+                    if (cell.ch != U' ' && cell.ch != 0) {
+                        hasContent = true;
+                        break;
+                    }
+                }
+                if (hasContent && !m_altActive && buf == &m_primary) {
+                    buf->scrollback.push_back(top);
                     while (int(buf->scrollback.size()) > m_scrollbackLimit)
                         buf->scrollback.pop_front();
                 }
@@ -84,7 +106,7 @@ void VtScreen::resize(int cols, int rows)
             }
             buf->lines.resize(size_t(rows));
             for (auto &line : buf->lines)
-                line.cells.resize(size_t(cols));
+                line.cells.resize(size_t(cols), VtCell());
         }
     }
 

@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QIcon>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QDir>
@@ -7,6 +8,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QTextStream>
 #include <QThread>
 #include <QTimer>
@@ -14,16 +16,51 @@
 #include "app/AppConfig.h"
 #include "app/Theme.h"
 #include "session/Crypto.h"
+#include "session/Recovery.h"
 #include "session/Session.h"
 #include "ssh/SftpWorker.h"
 #include "ssh/ShellSession.h"
+#include "term/TerminalWidget.h"
 #include "term/VtParser.h"
 #include "term/VtScreen.h"
+
+#include "ui/DataDirDialog.h"
+#include "ui/VaultDialog.h"
 #include "ui/MainWindow.h"
 
 using namespace termdock;
 
 namespace {
+
+// 首次换到新目录时，如果旧位置 ~/.config/termdock 里有数据，问一句要不要导入
+void maybeImportLegacyData(const QString &targetDir)
+{
+    const QString legacyDir = QDir::homePath() + QStringLiteral("/.config/termdock");
+    if (QDir::cleanPath(targetDir) == QDir::cleanPath(legacyDir))
+        return;
+    const QStringList files{QStringLiteral("sessions.json"), QStringLiteral("key"),
+                            QStringLiteral("known_hosts.json")};
+    bool legacyHas = false;
+    for (const QString &name : files)
+        legacyHas = legacyHas || QFile::exists(legacyDir + QLatin1Char('/') + name);
+    bool targetHas = false;
+    for (const QString &name : files)
+        targetHas = targetHas || QFile::exists(targetDir + QLatin1Char('/') + name);
+    if (!legacyHas || targetHas)
+        return;
+    const auto answer = QMessageBox::question(
+        nullptr, QStringLiteral("导入旧配置"),
+        QStringLiteral("在 %1 发现之前的会话数据，要导入到新目录吗？\n\n"
+                       "导入后会话列表和已保存的密码可直接使用。")
+            .arg(legacyDir));
+    if (answer != QMessageBox::Yes)
+        return;
+    for (const QString &name : files) {
+        const QString from = legacyDir + QLatin1Char('/') + name;
+        if (QFile::exists(from))
+            QFile::copy(from, targetDir + QLatin1Char('/') + name);
+    }
+}
 
 QTextStream &out()
 {
@@ -214,10 +251,59 @@ int runSelfTest()
                    text);
     }
 
+    test.section(QStringLiteral("鼠标上报"));
+    {
+        VtScreen screen(40, 10);
+        VtParser parser(&screen);
+        parser.feed(QByteArrayLiteral("\x1b[?1000h"));
+        test.check(screen.mouseMode() == VtScreen::MouseMode::Click, QStringLiteral("1000h 开启点击上报"));
+        parser.feed(QByteArrayLiteral("\x1b[?1002h"));
+        test.check(screen.mouseMode() == VtScreen::MouseMode::Drag, QStringLiteral("1002h 开启拖动上报"));
+        parser.feed(QByteArrayLiteral("\x1b[?1006h"));
+        test.check(screen.sgrMouse(), QStringLiteral("1006h 开启 SGR 编码"));
+        parser.feed(QByteArrayLiteral("\x1b[?1002l"));
+        test.check(screen.mouseMode() == VtScreen::MouseMode::Off, QStringLiteral("1002l 关闭上报"));
+
+        TerminalWidget widget;
+        widget.resize(400, 200);
+        widget.applyFont();
+        widget.setConnected(true);
+        QByteArray mouseBytes;
+        QObject::connect(&widget, &TerminalWidget::dataToSend,
+                         [&mouseBytes](const QByteArray &data) { mouseBytes += data; });
+        widget.screen()->setMouseMode(VtScreen::MouseMode::Click);
+        widget.screen()->setSgrMouse(true);
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(14, 12), QPointF(14, 12),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&widget, &press);
+        test.check(mouseBytes == QByteArrayLiteral("\x1b[<0;1;1M"), QStringLiteral("SGR 按下编码"),
+                   QString::fromLatin1(mouseBytes));
+        mouseBytes.clear();
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(14, 12), QPointF(14, 12),
+                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(&widget, &release);
+        test.check(mouseBytes == QByteArrayLiteral("\x1b[<0;1;1m"), QStringLiteral("SGR 抬起编码"),
+                   QString::fromLatin1(mouseBytes));
+        mouseBytes.clear();
+        widget.screen()->setSgrMouse(false);
+        QMouseEvent pressX10(QEvent::MouseButtonPress, QPointF(14, 12), QPointF(14, 12),
+                             Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&widget, &pressX10);
+        test.check(mouseBytes.size() == 6 && mouseBytes.startsWith(QByteArrayLiteral("\x1b[M")),
+                   QStringLiteral("X10 编码"), QString::fromLatin1(mouseBytes.toHex()));
+        mouseBytes.clear();
+        QMouseEvent shiftPress(QEvent::MouseButtonPress, QPointF(14, 12), QPointF(14, 12),
+                               Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
+        QApplication::sendEvent(&widget, &shiftPress);
+        test.check(mouseBytes.isEmpty(), QStringLiteral("Shift+点击保留本地选区不上报"));
+    }
+
     test.section(QStringLiteral("路径与配置"));
     {
         test.check(!AppConfig::configDir().isEmpty(), QStringLiteral("配置目录可解析"),
                    AppConfig::configDir());
+        test.check(!QIcon(QStringLiteral(":/icons/termdock-256.png")).isNull(),
+                   QStringLiteral("内置应用图标可加载"));
         test.check(AppConfig::sessionsFile().endsWith(QStringLiteral("sessions.json")),
                    QStringLiteral("会话文件路径"));
 
@@ -232,6 +318,30 @@ int runSelfTest()
         QString badError;
         Crypto::decrypt(QStringLiteral("gcm1:AAAA"), &badError);
         test.check(!badError.isEmpty(), QStringLiteral("损坏的密文会被拒绝"));
+
+        // 显式密钥加解密（恢复保险依赖它）
+        const QByteArray key = Crypto::masterKey();
+        const QString payload = Crypto::encryptWithKey(key, QStringLiteral("secret-值").toUtf8());
+        test.check(QString::fromUtf8(Crypto::decryptWithKey(key, payload))
+                       == QStringLiteral("secret-值"),
+                   QStringLiteral("显式密钥加解密往返"));
+
+        // 恢复保险：开启 → 用口令解出主密钥 → 错误口令被拒 → 关闭
+        const QString passphrase = QStringLiteral("termdock-recovery-test");
+        QString recoveryError;
+        test.check(Recovery::enable(passphrase, &recoveryError), QStringLiteral("恢复保险可开启"),
+                   recoveryError);
+        test.check(Recovery::enabled(), QStringLiteral("recovery.json 已生成"));
+        QByteArray recovered;
+        test.check(Recovery::unlock(passphrase, &recovered, &recoveryError)
+                       && recovered == Crypto::masterKey(),
+                   QStringLiteral("恢复口令能解出主密钥"), recoveryError);
+        QString wrongError;
+        test.check(!Recovery::unlock(QStringLiteral("wrong-passphrase"), &recovered, &wrongError),
+                   QStringLiteral("错误口令被拒绝"));
+        test.check(!wrongError.isEmpty(), QStringLiteral("错误口令有明确报错"));
+        test.check(Recovery::disable(), QStringLiteral("恢复保险可关闭"));
+        test.check(!Recovery::enabled(), QStringLiteral("关闭后 recovery.json 已删除"));
     }
 
     out() << "\n结果：" << (test.checks - test.failures) << "/" << test.checks << " 通过，"
@@ -365,14 +475,25 @@ int runConnectTest(const QString &host, int port, const QString &user, const QSt
     bool uploadOk = false;
     bool downloadOk = false;
     bool deleteOk = false;
+    int uploadCount = 0;
+    bool mkdirOk = false;
+    bool dirDownloadOk = false;
+    bool dirDeleteOk = false;
     QString uploadedLocal;
     QString downloadedLocal;
     QString opError;
     QObject::connect(&sftp, &SftpWorker::succeeded, [&](quint64, const QString &message) {
-        if (message.contains(QStringLiteral("已上传")))
+        if (message.contains(QStringLiteral("已创建目录")))
+            mkdirOk = true;
+        else if (message.contains(QStringLiteral("已上传"))) {
             uploadOk = true;
+            ++uploadCount;
+        } else if (message.contains(QStringLiteral("已下载目录")))
+            dirDownloadOk = true;
         else if (message.contains(QStringLiteral("已下载")))
             downloadOk = true;
+        else if (message.contains(QStringLiteral("已递归删除")))
+            dirDeleteOk = true;
         else if (message.contains(QStringLiteral("已删除")))
             deleteOk = true;
     });
@@ -405,12 +526,60 @@ int runConnectTest(const QString &host, int port, const QString &user, const QSt
     if (!opError.isEmpty())
         out() << "        错误详情：" << opError.trimmed().replace(QLatin1Char('\n'), QLatin1String(" | ")) << "\n";
 
+    // 目录级闭环：建目录 → 传两个文件 → 递归下载 → 递归删除
+    const QString remoteDir = QStringLiteral("/tmp/termdock_dir_%1").arg(QCoreApplication::applicationPid());
+    sftp.enqueue(SftpWorker::Op::Mkdir, remoteDir);
+    const bool mkdirFinished = waitUntil([&]() { return mkdirOk || opError.contains(QStringLiteral("创建目录")); }, 10000);
+    out() << (mkdirFinished && mkdirOk ? "  PASS" : "  FAIL") << "  创建远端目录 " << remoteDir << "\n";
+
+    const QString localA = QDir::tempPath() + QStringLiteral("/termdock_dir_a.txt");
+    const QString localB = QDir::tempPath() + QStringLiteral("/termdock_dir_b.txt");
+    for (const auto &pair : {qMakePair(localA, QStringLiteral("alpha-content")),
+                             qMakePair(localB, QStringLiteral("beta-content"))}) {
+        QFile f(pair.first);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            f.write(pair.second.toUtf8());
+            f.close();
+        }
+    }
+    uploadCount = 0;
+    sftp.enqueue(SftpWorker::Op::Upload, localA, remoteDir + QStringLiteral("/a.txt"));
+    sftp.enqueue(SftpWorker::Op::Upload, localB, remoteDir + QStringLiteral("/b.txt"));
+    const bool dirUploadFinished = waitUntil([&]() { return uploadCount >= 2; }, 20000);
+    out() << (dirUploadFinished ? "  PASS" : "  FAIL") << "  上传 2 个文件进该目录\n";
+
+    const QString localDir = QDir::tempPath()
+        + QStringLiteral("/termdock_download_%1").arg(QCoreApplication::applicationPid());
+    QDir(localDir).removeRecursively();
+    sftp.enqueue(SftpWorker::Op::Download, remoteDir, localDir);
+    const bool dirDownloadFinished = waitUntil(
+        [&]() { return dirDownloadOk || opError.contains(QStringLiteral("下载目录")); }, 20000);
+    bool dirContentOk = false;
+    if (dirDownloadFinished && dirDownloadOk) {
+        QFile fa(localDir + QStringLiteral("/a.txt"));
+        QFile fb(localDir + QStringLiteral("/b.txt"));
+        if (fa.open(QIODevice::ReadOnly) && fb.open(QIODevice::ReadOnly)) {
+            dirContentOk = QString::fromUtf8(fa.readAll()).trimmed() == QStringLiteral("alpha-content")
+                && QString::fromUtf8(fb.readAll()).trimmed() == QStringLiteral("beta-content");
+        }
+    }
+    out() << (dirContentOk ? "  PASS" : "  FAIL") << "  递归下载目录并校验两个文件内容\n";
+
+    sftp.enqueue(SftpWorker::Op::Remove, remoteDir);
+    const bool dirDeleteFinished = waitUntil(
+        [&]() { return dirDeleteOk || opError.contains(QStringLiteral("删除目录")); }, 20000);
+    out() << (dirDeleteFinished && dirDeleteOk ? "  PASS" : "  FAIL") << "  递归删除该目录\n";
+    QDir(localDir).removeRecursively();
+
     sftp.stop();
     sftp.wait(4000);
+    QFile::remove(localA);
+    QFile::remove(localB);
     QFile::remove(localSource);
     QFile::remove(downloadedLocal);
 
-    const bool allOk = gotMarker && gotCols && !listed.isEmpty() && contentMatches && deleteOk;
+    const bool allOk = gotMarker && gotCols && !listed.isEmpty() && contentMatches && deleteOk
+        && mkdirOk && dirUploadFinished && dirContentOk && dirDeleteOk;
     out() << "\n连接测试结果：" << (allOk ? "全部通过" : "存在失败项") << "\n";
     out().flush();
     return allOk ? 0 : 1;
@@ -435,6 +604,7 @@ int main(int argc, char *argv[])
     QApplication::setApplicationName(QStringLiteral("termdock"));
     QApplication::setApplicationVersion(QStringLiteral("0.1.0"));
     QApplication::setOrganizationName(QStringLiteral("termdock"));
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/termdock-256.png")));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("termdock：精简的 Qt 终端 + 会话簿 + SFTP 文件树"));
@@ -453,6 +623,9 @@ int main(int argc, char *argv[])
                                         QStringLiteral("user"));
     const QCommandLineOption portOption(QStringLiteral("port"), QStringLiteral("SSH 端口"),
                                         QStringLiteral("port"), QStringLiteral("22"));
+    const QCommandLineOption dataDirOption(
+        QStringLiteral("data-dir"),
+        QStringLiteral("直接指定数据保存目录（跳过首次启动选择）"), QStringLiteral("path"));
     const QCommandLineOption screenshotOption(QStringLiteral("screenshot"),
                                               QStringLiteral("截图保存路径（测试用）"),
                                               QStringLiteral("path"));
@@ -460,6 +633,7 @@ int main(int argc, char *argv[])
                                                    QStringLiteral("截图前等待毫秒数"),
                                                    QStringLiteral("ms"), QStringLiteral("4000"));
     parser.addOption(selfTestOption);
+    parser.addOption(dataDirOption);
     parser.addOption(connectTestOption);
     parser.addOption(connectOption);
     parser.addOption(userOption);
@@ -482,6 +656,41 @@ int main(int argc, char *argv[])
 
     QApplication::setStyle(QStringLiteral("Fusion"));
     app.setStyleSheet(Theme::instance().styleSheet());
+
+    // ---- 数据保存目录：优先命令行，其次首次启动向导 ----
+    const bool headless = parser.isSet(selfTestOption) || parser.isSet(connectTestOption);
+    if (parser.isSet(dataDirOption)) {
+        if (!AppConfig::setDataDir(parser.value(dataDirOption)))
+            out() << "数据目录不可写，回退到默认目录\n";
+    } else if (!AppConfig::hasStoredDataDir()) {
+        if (headless) {
+            AppConfig::setDataDirOverride(AppConfig::defaultDataDir());
+        } else {
+            DataDirDialog dialog(AppConfig::defaultDataDir());
+            const QString chosen = (dialog.exec() == QDialog::Accepted) ? dialog.dataDir()
+                                                                        : QString();
+            const QString target = chosen.isEmpty() ? AppConfig::defaultDataDir() : chosen;
+            if (!AppConfig::setDataDir(target)) {
+                out() << "数据目录写入失败：" << target << "\n";
+            } else {
+                out() << "数据目录：" << AppConfig::dataDir() << "\n";
+                if (!chosen.isEmpty())
+                    maybeImportLegacyData(AppConfig::dataDir());
+                if (!Recovery::enabled()) {
+                    const auto wantsRecovery = QMessageBox::question(
+                        nullptr, QStringLiteral("密码恢复保险（可选）"),
+                        QStringLiteral(
+                            "要不要顺手开启「密码恢复保险」？\n\n"
+                            "开启后你可以凭自己设置的恢复口令，随时导出已保存会话的明文密码；"
+                            "即使密钥文件丢失也能救回来。不开启不影响使用，主密钥丢失则历史密码无法解密。\n\n"
+                            "这个开关以后随时可以在「文件 → 已保存的密码…」里开启或关闭。"));
+                    if (wantsRecovery == QMessageBox::Yes)
+                        VaultDialog::promptEnable(nullptr);
+                }
+            }
+        }
+        out().flush();
+    }
 
     MainWindow window;
     window.show();

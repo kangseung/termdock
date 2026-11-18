@@ -160,6 +160,27 @@ QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 QScrollBar:horizontal { background: transparent; height: 10px; }
 QScrollBar::handle:horizontal { background: #333a46; border-radius: 5px; min-width: 24px; }
 QCheckBox { spacing: 6px; }
+QPushButton#newSession {
+    font-size: 17px;
+    font-weight: 600;
+    padding: 0px;
+    border-radius: 6px;
+}
+QLabel#placeholder {
+    color: #55607a;
+    font-size: 14px;
+    line-height: 180%;
+}
+QTableWidget, QTableView {
+    background: #12141a;
+    alternate-background-color: #171a21;
+    border: 1px solid #2c313a;
+    border-radius: 6px;
+    gridline-color: #232730;
+    selection-background-color: #263043;
+    selection-color: #e7ecf5;
+}
+QTableWidget::item, QTableView::item { padding: 4px 8px; }
 QDialog { background: #16181e; }
 QLabel#hint { color: #7d8696; }
 )");

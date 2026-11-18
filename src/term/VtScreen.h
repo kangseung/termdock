@@ -92,6 +92,13 @@ public:
     bool bracketedPaste() const { return m_bracketedPaste; }
     void setBracketedPaste(bool on) { m_bracketedPaste = on; }
 
+    // 鼠标上报：0=关闭，1000=按下/抬起，1002=拖动，1003=任何移动
+    enum class MouseMode { Off = 0, Click = 1000, Drag = 1002, Move = 1003 };
+    MouseMode mouseMode() const { return m_mouseMode; }
+    void setMouseMode(MouseMode mode) { m_mouseMode = mode; }
+    bool sgrMouse() const { return m_sgrMouse; }
+    void setSgrMouse(bool on) { m_sgrMouse = on; }
+
     // ---- 滚动区域 ----
     void setScrollRegion(int top, int bottom);
     int scrollTop() const { return m_scrollTop; }
@@ -201,6 +208,8 @@ private:
     bool m_appCursorKeys = false;
     bool m_appKeypad = false;
     bool m_bracketedPaste = false;
+    MouseMode m_mouseMode = MouseMode::Off;
+    bool m_sgrMouse = false;
 
     int m_scrollTop = 0;
     int m_scrollBottom = 0;

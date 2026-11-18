@@ -21,6 +21,7 @@ public:
         Download,
         Upload,
         Mkdir,
+        CreateFile,
         Remove,
         Rename,
     };
@@ -52,9 +53,15 @@ private:
 
     bool handleRequest(struct SftpHandle *sftp, const Request &request);
     bool listDir(struct SftpHandle *sftp, const Request &request);
+    SftpEntryList listEntries(struct SftpHandle *sftp, const QString &path, QString *error);
+    bool statIsDir(struct SftpHandle *sftp, const QString &path, bool *isDir);
+    bool downloadRecursive(struct SftpHandle *sftp, const QString &remote, const QString &local,
+                           const Request &request, QString *error);
+    bool removeRecursive(struct SftpHandle *sftp, const QString &path, QString *error);
     bool downloadFile(struct SftpHandle *sftp, const Request &request);
     bool uploadFile(struct SftpHandle *sftp, const Request &request);
     bool makeDir(struct SftpHandle *sftp, const Request &request);
+    bool createFile(struct SftpHandle *sftp, const Request &request);
     bool removePath(struct SftpHandle *sftp, const Request &request);
     bool renamePath(struct SftpHandle *sftp, const Request &request);
     QString sftpError(struct SftpHandle *sftp) const;

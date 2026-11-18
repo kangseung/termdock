@@ -1,0 +1,8 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file alias="termdock-16.png">assets/icons/termdock-16.png</file>
+        <file alias="termdock-32.png">assets/icons/termdock-32.png</file>
+        <file alias="termdock-64.png">assets/icons/termdock-64.png</file>
+        <file alias="termdock-256.png">assets/icons/termdock-256.png</file>
+    </qresource>
+</RCC>

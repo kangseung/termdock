@@ -528,11 +528,7 @@ void VtParser::setMode(bool on, bool priv)
             break;
         case 12:
         case 1004:
-        case 1000:
-        case 1002:
-        case 1003:
         case 1005:
-        case 1006:
         case 1015:
         case 1007:
         case 1034:
@@ -543,6 +539,18 @@ void VtParser::setMode(bool on, bool priv)
             break;
         case 25:
             m_screen->setCursorVisible(on);
+            break;
+        case 1000:
+            m_screen->setMouseMode(on ? VtScreen::MouseMode::Click : VtScreen::MouseMode::Off);
+            break;
+        case 1002:
+            m_screen->setMouseMode(on ? VtScreen::MouseMode::Drag : VtScreen::MouseMode::Off);
+            break;
+        case 1003:
+            m_screen->setMouseMode(on ? VtScreen::MouseMode::Move : VtScreen::MouseMode::Off);
+            break;
+        case 1006:
+            m_screen->setSgrMouse(on);
             break;
         case 47:
         case 1047:

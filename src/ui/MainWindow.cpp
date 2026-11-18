@@ -7,6 +7,7 @@
 #include "ssh/ShellSession.h"
 #include "term/TerminalWidget.h"
 #include "ui/FileTreePanel.h"
+#include "ui/VaultDialog.h"
 #include "ui/SessionDialog.h"
 #include "ui/SessionPanel.h"
 
@@ -22,6 +23,7 @@
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTimer>
+#include <QStackedWidget>
 #include <QVBoxLayout>
 
 namespace termdock {
@@ -41,8 +43,12 @@ MainWindow::MainWindow(QWidget *parent)
     if (!family.isEmpty())
         Theme::mutableInstance().setTerminalFontFamily(family);
     restoreGeometry(settings.value(QStringLiteral("ui/geometry")).toByteArray());
+    const QByteArray splitterState = settings.value(QStringLiteral("ui/splitter")).toByteArray();
+    if (!splitterState.isEmpty())
+        m_splitter->restoreState(splitterState);
 
-    statusBar()->showMessage(QStringLiteral("双击左侧会话即可连接；Ctrl+Shift+C / V 复制粘贴"));
+    statusBar()->showMessage(
+        QStringLiteral("双击右侧会话即可连接；左侧文件树右键可新建/上传/删除；Ctrl+Shift+C / V 复制粘贴"));
 }
 
 MainWindow::~MainWindow()
@@ -65,25 +71,43 @@ void MainWindow::setupUi()
     resize(1180, 720);
 
     m_sessionPanel = new SessionPanel(this);
-    m_sessionPanel->setMinimumWidth(200);
-    m_sessionPanel->setMaximumWidth(360);
+    m_sessionPanel->setMinimumWidth(250);
+    m_sessionPanel->setMaximumWidth(460);
 
     m_tabs = new QTabWidget(this);
     m_tabs->setTabsClosable(true);
     m_tabs->setMovable(true);
     m_tabs->setDocumentMode(true);
+    m_tabs->setMinimumWidth(420);
+
+    // 没有标签页时显示提示，避免中间留一大块空白
+    auto *placeholder = new QWidget(this);
+    auto *placeholderLayout = new QVBoxLayout(placeholder);
+    auto *placeholderText = new QLabel(
+        QStringLiteral("双击右侧的会话即可连接\n\nCtrl+N 新建会话 · Ctrl+Shift+K 查看已保存的密码"),
+        placeholder);
+    placeholderText->setObjectName(QStringLiteral("placeholder"));
+    placeholderText->setAlignment(Qt::AlignCenter);
+    placeholderLayout->addWidget(placeholderText);
+
+    m_tabStack = new QStackedWidget(this);
+    m_tabStack->addWidget(placeholder);
+    m_tabStack->addWidget(m_tabs);
+    m_tabStack->setMinimumWidth(420);
 
     m_filePanel = new FileTreePanel(this);
-    m_filePanel->setMinimumWidth(220);
+    m_filePanel->setMinimumWidth(240);
 
     m_splitter = new QSplitter(Qt::Horizontal, this);
-    m_splitter->addWidget(m_sessionPanel);
-    m_splitter->addWidget(m_tabs);
+    // 默认布局：左 = 文件树，中 = 终端标签，右 = 会话簿
     m_splitter->addWidget(m_filePanel);
+    m_splitter->addWidget(m_tabStack);
+    m_splitter->addWidget(m_sessionPanel);
     m_splitter->setStretchFactor(0, 0);
     m_splitter->setStretchFactor(1, 1);
     m_splitter->setStretchFactor(2, 0);
-    m_splitter->setSizes({240, 720, 280});
+    m_splitter->setChildrenCollapsible(false);
+    m_splitter->setSizes({300, 640, 280});
     setCentralWidget(m_splitter);
 
     m_statusInfo = new QLabel(this);
@@ -107,6 +131,14 @@ void MainWindow::setupActions()
     newAction->setShortcut(QKeySequence::New);
     connect(newAction, &QAction::triggered, this, &MainWindow::newSession);
 
+    auto *vaultAction = fileMenu->addAction(QStringLiteral("已保存的密码…"));
+    vaultAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+K")));
+    connect(vaultAction, &QAction::triggered, this, [this]() {
+        VaultDialog dialog(this);
+        dialog.exec();
+    });
+
+    fileMenu->addSeparator();
     auto *closeTabAction = fileMenu->addAction(QStringLiteral("关闭当前标签"));
     closeTabAction->setShortcut(QKeySequence::Close);
     connect(closeTabAction, &QAction::triggered, this, [this]() {
@@ -144,13 +176,13 @@ void MainWindow::setupActions()
     });
 
     auto *viewMenu = menuBar()->addMenu(QStringLiteral("视图"));
-    m_showSessionPanelAction = viewMenu->addAction(QStringLiteral("显示会话面板"));
+    m_showSessionPanelAction = viewMenu->addAction(QStringLiteral("显示会话面板（右侧）"));
     m_showSessionPanelAction->setCheckable(true);
     m_showSessionPanelAction->setChecked(true);
     connect(m_showSessionPanelAction, &QAction::toggled, this,
             [this](bool on) { m_sessionPanel->setVisible(on); });
 
-    m_showFilePanelAction = viewMenu->addAction(QStringLiteral("显示文件树"));
+    m_showFilePanelAction = viewMenu->addAction(QStringLiteral("显示文件树（左侧）"));
     m_showFilePanelAction->setCheckable(true);
     m_showFilePanelAction->setChecked(true);
     connect(m_showFilePanelAction, &QAction::toggled, this,
@@ -321,6 +353,7 @@ void MainWindow::openSession(const Session &session)
     page->terminal->setStatusText(QStringLiteral("正在连接 %1 …").arg(session.displayTarget()));
 
     const int tabIndex = m_tabs->addTab(page->terminal, session.name);
+    updateTabPlaceholder();
     m_pages.append(page);
     m_tabs->setCurrentIndex(tabIndex);
     // 连上就把键盘焦点交给终端，用户不用再点一下才能输入
@@ -463,6 +496,7 @@ void MainWindow::closePage(int tabIndex)
     Page *page = m_pages.at(tabIndex);
     m_pages.removeAt(tabIndex);
     m_tabs->removeTab(tabIndex);
+    updateTabPlaceholder();
 
     if (page->shell) {
         page->shell->stop();
@@ -510,6 +544,12 @@ int MainWindow::pageIndexOf(const Page *page) const
             return i;
     }
     return -1;
+}
+
+void MainWindow::updateTabPlaceholder()
+{
+    if (m_tabStack)
+        m_tabStack->setCurrentIndex(m_tabs->count() > 0 ? 1 : 0);
 }
 
 void MainWindow::onTabChanged(int index)
@@ -581,6 +621,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     }
     QSettings settings;
     settings.setValue(QStringLiteral("ui/geometry"), saveGeometry());
+    settings.setValue(QStringLiteral("ui/splitter"), m_splitter->saveState());
     persistUiState();
     event->accept();
 }

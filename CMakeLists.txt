@@ -20,6 +20,7 @@ set(TERMDOCK_SOURCES
     src/app/AppConfig.cpp
     src/app/Theme.cpp
     src/session/Crypto.cpp
+    src/session/Recovery.cpp
     src/session/Session.cpp
     src/session/SessionStore.cpp
     src/term/VtScreen.cpp
@@ -33,6 +34,8 @@ set(TERMDOCK_SOURCES
     src/ui/SessionPanel.cpp
     src/ui/SessionDialog.cpp
     src/ui/FileTreePanel.cpp
+    src/ui/DataDirDialog.cpp
+    src/ui/VaultDialog.cpp
     src/main.cpp
 )
 
@@ -40,6 +43,7 @@ set(TERMDOCK_HEADERS
     src/app/AppConfig.h
     src/app/Theme.h
     src/session/Crypto.h
+    src/session/Recovery.h
     src/session/Session.h
     src/session/SessionStore.h
     src/term/VtScreen.h
@@ -53,9 +57,13 @@ set(TERMDOCK_HEADERS
     src/ui/SessionPanel.h
     src/ui/SessionDialog.h
     src/ui/FileTreePanel.h
+    src/ui/DataDirDialog.h
+    src/ui/VaultDialog.h
 )
 
-add_executable(termdock ${TERMDOCK_SOURCES} ${TERMDOCK_HEADERS})
+set(CMAKE_AUTORCC ON)
+
+add_executable(termdock ${TERMDOCK_SOURCES} ${TERMDOCK_HEADERS} termdock.qrc)
 
 target_include_directories(termdock PRIVATE src ${LIBSSH2_INCLUDE_DIR})
 target_link_libraries(termdock PRIVATE
@@ -72,3 +80,8 @@ else()
 endif()
 
 install(TARGETS termdock RUNTIME DESTINATION bin)
+install(FILES packaging/termdock.desktop DESTINATION share/applications)
+install(FILES assets/icons/termdock-16.png DESTINATION share/icons/hicolor/16x16/apps RENAME termdock.png)
+install(FILES assets/icons/termdock-32.png DESTINATION share/icons/hicolor/32x32/apps RENAME termdock.png)
+install(FILES assets/icons/termdock-64.png DESTINATION share/icons/hicolor/64x64/apps RENAME termdock.png)
+install(FILES assets/icons/termdock-256.png DESTINATION share/icons/hicolor/256x256/apps RENAME termdock.png)

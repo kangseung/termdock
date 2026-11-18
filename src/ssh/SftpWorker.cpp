@@ -115,6 +115,8 @@ bool SftpWorker::handleRequest(SftpHandle *sftp, const Request &request)
         return uploadFile(sftp, request);
     case Op::Mkdir:
         return makeDir(sftp, request);
+    case Op::CreateFile:
+        return createFile(sftp, request);
     case Op::Remove:
         return removePath(sftp, request);
     case Op::Rename:
@@ -123,17 +125,19 @@ bool SftpWorker::handleRequest(SftpHandle *sftp, const Request &request)
     return false;
 }
 
-bool SftpWorker::listDir(SftpHandle *sftp, const Request &request)
+SftpEntryList SftpWorker::listEntries(SftpHandle *sftp, const QString &path, QString *error)
 {
-    const QByteArray path = request.path.toUtf8();
-    LIBSSH2_SFTP_HANDLE *dir = libssh2_sftp_open_ex(sftp->sftp, path.constData(), size_t(path.size()),
-                                                   0, 0, LIBSSH2_SFTP_OPENDIR);
+    SftpEntryList entries;
+    const QByteArray remotePath = path.toUtf8();
+    LIBSSH2_SFTP_HANDLE *dir = libssh2_sftp_open_ex(sftp->sftp, remotePath.constData(),
+                                                   size_t(remotePath.size()), 0, 0,
+                                                   LIBSSH2_SFTP_OPENDIR);
     if (!dir) {
-        emit failedOp(request.id, QStringLiteral("无法打开目录 %1：%2").arg(request.path, sftpError(sftp)));
-        return false;
+        if (error)
+            *error = sftpError(sftp);
+        return entries;
     }
 
-    SftpEntryList entries;
     QByteArray nameBuffer(4096, Qt::Uninitialized);
     LIBSSH2_SFTP_ATTRIBUTES attributes{};
     while (true) {
@@ -147,8 +151,8 @@ bool SftpWorker::listDir(SftpHandle *sftp, const Request &request)
 
         SftpEntry entry;
         entry.name = name;
-        entry.path = request.path == QLatin1String("/") ? QLatin1Char('/') + name
-                                                        : request.path + QLatin1Char('/') + name;
+        entry.path = (path == QLatin1String("/")) ? QLatin1Char('/') + name
+                                                  : path + QLatin1Char('/') + name;
         if (attributes.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) {
             entry.mode = attributes.permissions;
             entry.isDir = (attributes.permissions & LIBSSH2_SFTP_S_IFMT) == LIBSSH2_SFTP_S_IFDIR;
@@ -167,13 +171,53 @@ bool SftpWorker::listDir(SftpHandle *sftp, const Request &request)
             return a.isDir;
         return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
     });
+    return entries;
+}
 
+bool SftpWorker::listDir(SftpHandle *sftp, const Request &request)
+{
+    QString error;
+    const SftpEntryList entries = listEntries(sftp, request.path, &error);
+    if (!error.isEmpty()) {
+        emit failedOp(request.id, QStringLiteral("无法打开目录 %1：%2").arg(request.path, error));
+        return false;
+    }
     emit listed(request.id, request.path, entries);
+    return true;
+}
+
+bool SftpWorker::statIsDir(SftpHandle *sftp, const QString &path, bool *isDir)
+{
+    const QByteArray remotePath = path.toUtf8();
+    LIBSSH2_SFTP_ATTRIBUTES attributes{};
+    const int rc = libssh2_sftp_stat_ex(sftp->sftp, remotePath.constData(), size_t(remotePath.size()),
+                                        LIBSSH2_SFTP_STAT, &attributes);
+    if (rc != 0) {
+        *isDir = false;
+        return false;
+    }
+    *isDir = (attributes.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS)
+        && (attributes.permissions & LIBSSH2_SFTP_S_IFMT) == LIBSSH2_SFTP_S_IFDIR;
     return true;
 }
 
 bool SftpWorker::downloadFile(SftpHandle *sftp, const Request &request)
 {
+    bool isDir = false;
+    if (!statIsDir(sftp, request.path, &isDir)) {
+        emit failedOp(request.id, QStringLiteral("无法读取 %1 的属性：%2").arg(request.path, sftpError(sftp)));
+        return false;
+    }
+    if (isDir) {
+        QString error;
+        if (!downloadRecursive(sftp, request.path, request.path2, request, &error)) {
+            emit failedOp(request.id, QStringLiteral("下载目录 %1 失败：%2").arg(request.path, error));
+            return false;
+        }
+        emit succeeded(request.id, QStringLiteral("已下载目录 %1 → %2").arg(request.path, request.path2));
+        return true;
+    }
+
     const QByteArray remotePath = request.path.toUtf8();
     LIBSSH2_SFTP_HANDLE *file = libssh2_sftp_open_ex(sftp->sftp, remotePath.constData(),
                                                     size_t(remotePath.size()), LIBSSH2_FXF_READ, 0,
@@ -228,6 +272,96 @@ bool SftpWorker::downloadFile(SftpHandle *sftp, const Request &request)
     }
     emit progressed(request.id, done, total > 0 ? total : done);
     emit succeeded(request.id, QStringLiteral("已下载 %1 → %2").arg(request.path, info.absoluteFilePath()));
+    return true;
+}
+
+bool SftpWorker::downloadRecursive(SftpHandle *sftp, const QString &remote, const QString &local,
+                                   const Request &request, QString *error)
+{
+    QDir().mkpath(local);
+    QString listError;
+    const SftpEntryList entries = listEntries(sftp, remote, &listError);
+    if (!listError.isEmpty()) {
+        *error = listError;
+        return false;
+    }
+    for (const SftpEntry &entry : entries) {
+        const QString localChild = local + QLatin1Char('/') + entry.name;
+        if (entry.isDir) {
+            if (!downloadRecursive(sftp, entry.path, localChild, request, error))
+                return false;
+            continue;
+        }
+        // 单个文件：直接读远端写本地
+        const QByteArray remotePath = entry.path.toUtf8();
+        LIBSSH2_SFTP_HANDLE *file = libssh2_sftp_open_ex(sftp->sftp, remotePath.constData(),
+                                                        size_t(remotePath.size()), LIBSSH2_FXF_READ, 0,
+                                                        LIBSSH2_SFTP_OPENFILE);
+        if (!file) {
+            *error = sftpError(sftp);
+            return false;
+        }
+        QFile localFile(localChild);
+        if (!localFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            libssh2_sftp_close_handle(file);
+            *error = localFile.errorString();
+            return false;
+        }
+        QByteArray buffer(32768, Qt::Uninitialized);
+        qint64 done = 0;
+        bool ok = true;
+        while (true) {
+            const ssize_t got = libssh2_sftp_read(file, buffer.data(), size_t(buffer.size()));
+            if (got == 0)
+                break;
+            if (got < 0 || localFile.write(buffer.constData(), got) != got) {
+                ok = false;
+                break;
+            }
+            done += got;
+            emit progressed(request.id, done, entry.size);
+        }
+        libssh2_sftp_close_handle(file);
+        localFile.close();
+        if (!ok) {
+            *error = sftpError(sftp);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool SftpWorker::removeRecursive(SftpHandle *sftp, const QString &path, QString *error)
+{
+    bool isDir = false;
+    if (!statIsDir(sftp, path, &isDir)) {
+        *error = sftpError(sftp);
+        return false;
+    }
+    if (!isDir) {
+        const QByteArray remotePath = path.toUtf8();
+        if (libssh2_sftp_unlink_ex(sftp->sftp, remotePath.constData(), size_t(remotePath.size())) != 0) {
+            *error = sftpError(sftp);
+            return false;
+        }
+        return true;
+    }
+
+    QString listError;
+    const SftpEntryList entries = listEntries(sftp, path, &listError);
+    if (!listError.isEmpty()) {
+        *error = listError;
+        return false;
+    }
+    for (const SftpEntry &entry : entries) {
+        if (!removeRecursive(sftp, entry.path, error))
+            return false;
+    }
+    const QByteArray remotePath = path.toUtf8();
+    if (libssh2_sftp_rmdir_ex(sftp->sftp, remotePath.constData(), size_t(remotePath.size())) != 0) {
+        *error = sftpError(sftp);
+        return false;
+    }
     return true;
 }
 
@@ -304,24 +438,39 @@ bool SftpWorker::makeDir(SftpHandle *sftp, const Request &request)
     return true;
 }
 
-bool SftpWorker::removePath(SftpHandle *sftp, const Request &request)
+bool SftpWorker::createFile(SftpHandle *sftp, const Request &request)
 {
     const QByteArray path = request.path.toUtf8();
-    LIBSSH2_SFTP_ATTRIBUTES attributes{};
-    const bool haveAttrs = libssh2_sftp_stat_ex(sftp->sftp, path.constData(), size_t(path.size()),
-                                                LIBSSH2_SFTP_STAT, &attributes) == 0;
-    const bool isDir = haveAttrs && (attributes.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS)
-        && (attributes.permissions & LIBSSH2_SFTP_S_IFMT) == LIBSSH2_SFTP_S_IFDIR;
-
-    const int rc = isDir ? libssh2_sftp_rmdir_ex(sftp->sftp, path.constData(), size_t(path.size()))
-                         : libssh2_sftp_unlink_ex(sftp->sftp, path.constData(), size_t(path.size()));
-    if (rc != 0) {
-        emit failedOp(request.id, isDir
-                          ? QStringLiteral("删除目录 %1 失败（可能非空）：%2").arg(request.path, sftpError(sftp))
-                          : QStringLiteral("删除文件 %1 失败：%2").arg(request.path, sftpError(sftp)));
+    LIBSSH2_SFTP_HANDLE *file = libssh2_sftp_open_ex(
+        sftp->sftp, path.constData(), size_t(path.size()),
+        LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_EXCL,
+        LIBSSH2_SFTP_S_IRUSR | LIBSSH2_SFTP_S_IWUSR | LIBSSH2_SFTP_S_IRGRP | LIBSSH2_SFTP_S_IROTH,
+        LIBSSH2_SFTP_OPENFILE);
+    if (!file) {
+        emit failedOp(request.id, QStringLiteral("创建文件 %1 失败：%2").arg(request.path, sftpError(sftp)));
         return false;
     }
-    emit succeeded(request.id, QStringLiteral("已删除 %1").arg(request.path));
+    libssh2_sftp_close_handle(file);
+    emit succeeded(request.id, QStringLiteral("已创建文件 %1").arg(request.path));
+    return true;
+}
+
+bool SftpWorker::removePath(SftpHandle *sftp, const Request &request)
+{
+    bool isDir = false;
+    QString error;
+    if (!statIsDir(sftp, request.path, &isDir)) {
+        emit failedOp(request.id, QStringLiteral("无法读取 %1 的属性：%2").arg(request.path, sftpError(sftp)));
+        return false;
+    }
+    if (!removeRecursive(sftp, request.path, &error)) {
+        emit failedOp(request.id, (isDir ? QStringLiteral("删除目录 %1 失败：%2")
+                                         : QStringLiteral("删除文件 %1 失败：%2"))
+                                     .arg(request.path, error));
+        return false;
+    }
+    emit succeeded(request.id, isDir ? QStringLiteral("已递归删除目录 %1").arg(request.path)
+                                     : QStringLiteral("已删除 %1").arg(request.path));
     return true;
 }
 
