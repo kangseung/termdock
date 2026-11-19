@@ -1,6 +1,7 @@
 #include "ssh/NetCompat.h"
 
 #include <QByteArray>
+#include <QElapsedTimer>
 
 #ifdef _WIN32
 #    include <ws2tcpip.h>
@@ -105,10 +106,26 @@ bool waitSocket(Socket sock, int timeoutMs, bool forWrite)
     pollfd pfd{};
     pfd.fd = sock;
     pfd.events = forWrite ? POLLOUT : POLLIN;
-    const int rc = ::poll(&pfd, 1, timeoutMs);
-    if (rc <= 0)
-        return false;
-    return (pfd.revents & (forWrite ? POLLOUT : POLLIN)) != 0 || (pfd.revents & POLLHUP) != 0;
+
+    // poll 可能被信号打断（SIGCHLD/SIGWINCH 之类），收到 EINTR 要接着等，
+    // 否则一次无关的信号就会被当成“连接超时”。
+    QElapsedTimer elapsed;
+    elapsed.start();
+    while (true) {
+        const int remaining = timeoutMs - int(elapsed.elapsed());
+        const int rc = ::poll(&pfd, 1, remaining < 0 ? 0 : remaining);
+        if (rc < 0) {
+            if (errno == EINTR && (timeoutMs <= 0 || elapsed.elapsed() < timeoutMs))
+                continue;
+            return false;
+        }
+        if (rc == 0)
+            return false;
+        // POLLERR 也要当成“就绪”：让上层用 getsockopt 读到真实错误，
+        // 而不是在这里笼统地报成超时
+        return (pfd.revents & (forWrite ? POLLOUT : POLLIN)) != 0
+               || (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) != 0;
+    }
 #endif
 }
 
@@ -167,7 +184,8 @@ bool connectWithTimeout(const QString &host, int port, int timeoutMs, Socket *ou
 #ifdef _WIN32
             const bool inProgress = WSAGetLastError() == WSAEWOULDBLOCK;
 #else
-            const bool inProgress = errno == EINPROGRESS;
+            // POSIX：EINTR 表示 connect 被信号打断，连接仍在后台继续，之后照样 poll 等它
+            const bool inProgress = (errno == EINPROGRESS || errno == EINTR);
 #endif
             if (inProgress) {
                 if (waitSocket(sock, timeoutMs, true)) {
@@ -182,7 +200,8 @@ bool connectWithTimeout(const QString &host, int port, int timeoutMs, Socket *ou
                     if (soError == 0) {
                         ok = true;
                     } else {
-                        lastMessage = QStringLiteral("连接被拒绝：%1").arg(socketErrorText(soError));
+                        // socketErrorText 本身就是“连接被拒绝”这种话，别再套一层前缀
+                        lastMessage = socketErrorText(soError);
                     }
                 } else {
                     lastMessage = QStringLiteral("连接超时（%1 秒）").arg(timeoutMs / 1000);

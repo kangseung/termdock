@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(termdock VERSION 0.2.1 LANGUAGES CXX)
+project(termdock VERSION 0.2.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -76,6 +76,9 @@ set(CMAKE_AUTORCC ON)
 add_executable(termdock WIN32 ${TERMDOCK_SOURCES} ${TERMDOCK_HEADERS} termdock.qrc)
 
 target_include_directories(termdock PRIVATE src ${LIBSSH2_INCLUDE_DIR})
+# 版本号只在 CMakeLists 里维护：以前 main.cpp 手抄一份，改了 CMake 忘了改它，
+# 结果 0.2.1 的包 --version 还报 0.1.5
+target_compile_definitions(termdock PRIVATE TERMDOCK_VERSION="${PROJECT_VERSION}")
 target_link_libraries(termdock PRIVATE
     Qt6::Widgets
     OpenSSL::Crypto

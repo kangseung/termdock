@@ -341,6 +341,11 @@ void FileTreePanel::navigateTo(const QString &target)
         resolved = m_model->loginHome();
     } else if (input.startsWith(QLatin1String("~/"))) {
         resolved = m_model->loginHome() + input.mid(1);
+    } else if (input.startsWith(QLatin1Char('~'))) {
+        // ~别人的家目录：SFTP 解不开，别拼出一个假的相对路径让人以为跳错了
+        setStatus(QStringLiteral("只支持 ~（自己的家目录），~用户名 这类路径请直接写绝对路径"));
+        updatePathLabel();
+        return;
     } else if (input.startsWith(QLatin1Char('/'))) {
         resolved = input;
     } else {
