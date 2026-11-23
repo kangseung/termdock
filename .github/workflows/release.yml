@@ -130,6 +130,19 @@ jobs:
           } > dist/RELEASE_NOTES-ALL.md
           cat dist/RELEASE_NOTES-ALL.md
 
+      # 同名 tag 重新发布时（比如改完代码重新打标签），先把旧附件删掉，
+      # 否则会留下上一版文件名的文件（如 0.2.2 的包挂在 0.2.3 的 Release 下）
+      - name: 清掉同名 tag 下的旧附件
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ids=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/${{ github.ref_name }}" \
+                  --jq '.assets[].id' 2>/dev/null || true)
+          for id in $ids; do
+            echo "删除旧附件 $id"
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id" || true
+          done
+
       - name: 发布 Release
         uses: softprops/action-gh-release@v2
         with:
