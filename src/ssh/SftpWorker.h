@@ -55,8 +55,9 @@ private:
     bool listDir(struct SftpHandle *sftp, const Request &request);
     SftpEntryList listEntries(struct SftpHandle *sftp, const QString &path, QString *error);
     bool statIsDir(struct SftpHandle *sftp, const QString &path, bool *isDir);
+    bool pathIsLink(struct SftpHandle *sftp, const QString &path, bool *isLink);
     bool downloadRecursive(struct SftpHandle *sftp, const QString &remote, const QString &local,
-                           const Request &request, QString *error);
+                           const Request &request, QString *error, int depth = 0);
     bool removeRecursive(struct SftpHandle *sftp, const QString &path, QString *error);
     bool downloadFile(struct SftpHandle *sftp, const Request &request);
     bool uploadFile(struct SftpHandle *sftp, const Request &request);

@@ -202,6 +202,34 @@ SftpEntryList SftpWorker::listEntries(SftpHandle *sftp, const QString &path, QSt
     }
     libssh2_sftp_close_handle(dir);
 
+    // SFTP v3 的 readdir 只给链接自己的属性（类型是 l），所以软链目录会被当成文件，
+    // 既没有展开箭头也点不开。这里对符号链接补一次 stat（跟随链接）拿目标的类型。
+    // 有些服务端连权限位都不给（type 未知），这种也补一次，否则同样认不出目录。
+    // 上限保护：一次列目录最多补查 200 个，避免上千个链接的老机器上列目录变卡。
+    int probeBudget = 200;
+    for (SftpEntry &entry : entries) {
+        const quint32 type = entry.mode & LIBSSH2_SFTP_S_IFMT;
+        if (!entry.isSymlink && type != 0)
+            continue;
+        if (probeBudget-- <= 0)
+            break;
+        LIBSSH2_SFTP_ATTRIBUTES target{};
+        const QByteArray targetPath = entry.path.toUtf8();
+        if (libssh2_sftp_stat(sftp->sftp, targetPath.constData(), &target) != 0) {
+            entry.isBrokenLink = entry.isSymlink; // 断链：界面上压暗，仍显示成链接
+            continue;
+        }
+        if (target.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) {
+            // 只用来判定目标是不是目录；权限列保持链接自己的权限（和 ls -l 一致）
+            const quint32 targetMode = target.permissions;
+            entry.isDir = (targetMode & LIBSSH2_SFTP_S_IFMT) == LIBSSH2_SFTP_S_IFDIR;
+        }
+        if (target.flags & LIBSSH2_SFTP_ATTR_SIZE)
+            entry.size = qint64(target.filesize);
+        if (target.flags & LIBSSH2_SFTP_ATTR_ACMODTIME)
+            entry.mtime = qint64(target.mtime);
+    }
+
     std::sort(entries.begin(), entries.end(), [](const SftpEntry &a, const SftpEntry &b) {
         if (a.isDir != b.isDir)
             return a.isDir;
@@ -234,6 +262,23 @@ bool SftpWorker::statIsDir(SftpHandle *sftp, const QString &path, bool *isDir)
     }
     *isDir = (attributes.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS)
         && (attributes.permissions & LIBSSH2_SFTP_S_IFMT) == LIBSSH2_SFTP_S_IFDIR;
+    return true;
+}
+
+// 判断路径本身是不是符号链接（lstat 不跟随链接）。删除时靠它避免顺着链接
+// 把目标目录里的东西一起删掉 —— 那属于彻底的数据事故。
+bool SftpWorker::pathIsLink(SftpHandle *sftp, const QString &path, bool *isLink)
+{
+    const QByteArray remotePath = path.toUtf8();
+    LIBSSH2_SFTP_ATTRIBUTES attributes{};
+    const int rc = libssh2_sftp_stat_ex(sftp->sftp, remotePath.constData(), size_t(remotePath.size()),
+                                        LIBSSH2_SFTP_LSTAT, &attributes);
+    if (rc != 0) {
+        *isLink = false;
+        return false;
+    }
+    *isLink = (attributes.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS)
+              && (attributes.permissions & LIBSSH2_SFTP_S_IFMT) == LIBSSH2_SFTP_S_IFLNK;
     return true;
 }
 
@@ -313,8 +358,13 @@ bool SftpWorker::downloadFile(SftpHandle *sftp, const Request &request)
 }
 
 bool SftpWorker::downloadRecursive(SftpHandle *sftp, const QString &remote, const QString &local,
-                                   const Request &request, QString *error)
+                                   const Request &request, QString *error, int depth)
 {
+    // 软链目录会被当成目录往下走，遇到 "链接指回上层" 的环就会无限递归
+    if (depth > 64) {
+        *error = QStringLiteral("目录层级过深（可能有循环符号链接）：%1").arg(remote);
+        return false;
+    }
     QDir().mkpath(local);
     QString listError;
     const SftpEntryList entries = listEntries(sftp, remote, &listError);
@@ -325,7 +375,7 @@ bool SftpWorker::downloadRecursive(SftpHandle *sftp, const QString &remote, cons
     for (const SftpEntry &entry : entries) {
         const QString localChild = local + QLatin1Char('/') + entry.name;
         if (entry.isDir) {
-            if (!downloadRecursive(sftp, entry.path, localChild, request, error))
+            if (!downloadRecursive(sftp, entry.path, localChild, request, error, depth + 1))
                 return false;
             continue;
         }
@@ -375,12 +425,19 @@ bool SftpWorker::downloadRecursive(SftpHandle *sftp, const QString &remote, cons
 
 bool SftpWorker::removeRecursive(SftpHandle *sftp, const QString &path, QString *error)
 {
-    bool isDir = false;
-    if (!statIsDir(sftp, path, &isDir)) {
+    // 先按 lstat 看路径本身：符号链接一律只 unlink 链接，
+    // 绝不顺着链接递归删到目标目录里去（软链目录的 isDir 是跟随链接算出来的）
+    bool isLink = false;
+    if (!pathIsLink(sftp, path, &isLink)) {
         *error = sftpError(sftp);
         return false;
     }
-    if (!isDir) {
+    bool isDir = false;
+    if (!isLink && !statIsDir(sftp, path, &isDir)) {
+        *error = sftpError(sftp);
+        return false;
+    }
+    if (isLink || !isDir) {
         const QByteArray remotePath = path.toUtf8();
         if (libssh2_sftp_unlink_ex(sftp->sftp, remotePath.constData(), size_t(remotePath.size())) != 0) {
             *error = sftpError(sftp);
@@ -500,9 +557,11 @@ bool SftpWorker::createFile(SftpHandle *sftp, const Request &request)
 
 bool SftpWorker::removePath(SftpHandle *sftp, const Request &request)
 {
+    bool isLink = false;
     bool isDir = false;
     QString error;
-    if (!statIsDir(sftp, request.path, &isDir)) {
+    if (!pathIsLink(sftp, request.path, &isLink)
+        || (!isLink && !statIsDir(sftp, request.path, &isDir))) {
         emit failedOp(request.id, QStringLiteral("无法读取 %1 的属性：%2").arg(request.path, sftpError(sftp)));
         return false;
     }

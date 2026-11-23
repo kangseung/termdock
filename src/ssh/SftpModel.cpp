@@ -1,9 +1,12 @@
 #include "ssh/SftpModel.h"
 
+#include "app/Theme.h"
+
 #include <QApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QFileIconProvider>
+#include <QPainter>
 #include <QStyle>
 
 namespace termdock {
@@ -25,13 +28,56 @@ QString formatSize(qint64 size, bool isDir)
     return QStringLiteral("%1 GB").arg(mb / 1024.0, 0, 'f', 2);
 }
 
-QIcon iconFor(bool isDir)
+// 在基础图标右下角叠一个“链接”标记：正常符号链接用主色，断链用红色。
+// 这样软链目录既显示成文件夹（能展开），又能一眼看出是链接。
+QIcon makeLinkIcon(const QString &basePath, bool broken)
+{
+    const int size = 64;
+    QPixmap pixmap = QIcon(basePath).pixmap(size, size);
+    if (pixmap.isNull())
+        return QIcon(basePath);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    const qreal badge = size * 0.52;
+    const QRectF circle(size - badge, size - badge, badge, badge);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(broken ? QColor(0xE0, 0x6C, 0x75) : QColor(0x14, 0x8C, 0xD2));
+    painter.drawEllipse(circle);
+
+    // 圆圈里画一个指向右上角的箭头（不用字符，字体缺字会变成方块）
+    const QPointF center = circle.center();
+    const qreal r = badge * 0.26;
+    QPen pen(QColor(0xFF, 0xFF, 0xFF));
+    pen.setWidthF(qMax(1.5, badge * 0.15));
+    pen.setCapStyle(Qt::RoundCap);
+    painter.setPen(pen);
+    const QPointF tail(center.x() - r, center.y() + r);
+    const QPointF tip(center.x() + r, center.y() - r);
+    painter.drawLine(tail, tip);
+    painter.drawLine(tip, QPointF(tip.x(), tip.y() + r * 0.9));
+    painter.drawLine(tip, QPointF(tip.x() - r * 0.9, tip.y()));
+    return QIcon(pixmap);
+}
+
+QIcon iconFor(const SftpEntry &entry)
 {
     // 用自带的彩色图标：Fusion/QSS 皮肤下 style() 给的 SP_DirIcon 是深色的，
     // 放在深色背景上等于"看不见"（用户反馈文件夹图标黑咕隆咚）
-    static const QIcon dirIcon(QStringLiteral(":/icons/folder.png"));
-    static const QIcon fileIcon(QStringLiteral(":/icons/file.png"));
-    return isDir ? dirIcon : fileIcon;
+    const QString dirPath = QStringLiteral(":/icons/folder.png");
+    const QString filePath = QStringLiteral(":/icons/file.png");
+    static const QIcon dirIcon(dirPath);
+    static const QIcon fileIcon(filePath);
+    if (!entry.isSymlink)
+        return entry.isDir ? dirIcon : fileIcon;
+
+    static const QIcon dirLinkIcon = makeLinkIcon(dirPath, false);
+    static const QIcon fileLinkIcon = makeLinkIcon(filePath, false);
+    static const QIcon brokenLinkIcon = makeLinkIcon(filePath, true);
+    if (entry.isBrokenLink)
+        return brokenLinkIcon;
+    return entry.isDir ? dirLinkIcon : fileLinkIcon;
 }
 
 } // namespace
@@ -265,16 +311,28 @@ QVariant SftpModel::data(const QModelIndex &index, int role) const
         return QVariant();
     case Qt::DecorationRole:
         if (index.column() == NameColumn)
-            return iconFor(entry.isDir);
+            return iconFor(entry);
+        return QVariant();
+    case Qt::ForegroundRole:
+        // 断链压暗，一眼能看出点了也没用
+        if (entry.isBrokenLink)
+            return QBrush(Theme::instance().mutedText());
         return QVariant();
     case Qt::TextAlignmentRole:
         if (index.column() == SizeColumn)
             return QVariant(int(Qt::AlignRight | Qt::AlignVCenter));
         return QVariant(int(Qt::AlignLeft | Qt::AlignVCenter));
-    case Qt::ToolTipRole:
+    case Qt::ToolTipRole: {
+        QString kind = entry.isDir ? QStringLiteral("目录") : QStringLiteral("文件");
+        if (entry.isSymlink) {
+            if (entry.isBrokenLink)
+                kind = QStringLiteral("符号链接（目标不存在）");
+            else
+                kind = QStringLiteral("符号链接 → %1").arg(kind);
+        }
         return QStringLiteral("%1\n%2\n权限 %3\n大小 %4 字节")
-            .arg(entry.path, entry.isDir ? QStringLiteral("目录") : QStringLiteral("文件"),
-                 entry.permissionsText(), QString::number(entry.size));
+            .arg(entry.path, kind, entry.permissionsText(), QString::number(entry.size));
+    }
     default:
         return QVariant();
     }

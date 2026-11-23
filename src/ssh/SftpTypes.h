@@ -12,6 +12,7 @@ struct SftpEntry {
     QString path;
     bool isDir = false;
     bool isSymlink = false;
+    bool isBrokenLink = false;   // 链接指向的目标不存在（stat 失败）
     qint64 size = 0;
     qint64 mtime = 0;
     quint32 mode = 0;
