@@ -89,10 +89,75 @@ void SessionDialog::setupUi()
         m_password->setEchoMode(checked ? QLineEdit::Normal : QLineEdit::Password);
     });
     connect(m_host, &QLineEdit::returnPressed, this, &SessionDialog::accept);
+    // 粘 “用户@主机” 这种（ssh 命令里那一段）时，离开主机栏就自动拆好
+    connect(m_host, &QLineEdit::editingFinished, this, &SessionDialog::parseHostField);
+    parseHostField();
+}
+
+// 主机栏支持三种写法，都会拆成 账号 / 主机 / 端口：
+//   用户@主机        用户@主机:2222        ssh://root@example.com:2200
+// 名称留空时自动填主机，账号留空时用拆出来的账号
+void SessionDialog::parseHostField()
+{
+    QString text = m_host->text().trimmed();
+    if (text.isEmpty())
+        return;
+    if (text.startsWith(QLatin1String("ssh://"), Qt::CaseInsensitive))
+        text = text.mid(6);
+    if (text.isEmpty())
+        return;
+
+    QString user;
+    const int at = text.lastIndexOf(QLatin1Char('@'));
+    if (at >= 0) {
+        user = text.left(at);
+        text = text.mid(at + 1);
+    }
+
+    QString host = text;
+    int port = 0;
+    if (host.startsWith(QLatin1Char('['))) {           // [::1]:2222
+        const int close = host.indexOf(QLatin1Char(']'));
+        if (close > 0) {
+            const QString rest = host.mid(close + 1);
+            host = host.mid(1, close - 1);
+            if (rest.startsWith(QLatin1Char(':')))
+                port = rest.mid(1).toInt();
+        }
+    } else if (host.count(QLatin1Char(':')) == 1) {    // host:2222（不加括号的是 IPv6，不动它）
+        const int colon = host.indexOf(QLatin1Char(':'));
+        const QString portText = host.mid(colon + 1);
+        bool ok = false;
+        const int parsed = portText.toInt(&ok);
+        if (ok && parsed > 0 && parsed <= 65535) {
+            port = parsed;
+            host = host.left(colon);
+        }
+    }
+
+    host = host.trimmed();
+    if (host.isEmpty())
+        return;
+
+    const QString oldHost = m_host->text().trimmed();
+    m_host->setText(host);
+    if (port > 0)
+        m_port->setValue(port);
+    if (!user.trimmed().isEmpty())
+        m_user->setText(user.trimmed());
+    // 名称没自己起过（空的 / 还是默认的“新会话” / 就是原来那串主机）→ 用纯主机地址；
+    // 用户自己起过名字的会话不动它，免得改个主机把名字冲掉
+    const QString name = m_name->text().trimmed();
+    const bool untouchedName = name.isEmpty() || name == QStringLiteral("新会话")
+                               || name == oldHost || name == m_session.host
+                               || name == m_session.name;
+    if (untouchedName)
+        m_name->setText(host);
 }
 
 void SessionDialog::accept()
 {
+    parseHostField();
     if (m_host->text().trimmed().isEmpty()) {
         QMessageBox::warning(this, QStringLiteral("缺少主机"), QStringLiteral("请填写主机地址。"));
         m_host->setFocus();

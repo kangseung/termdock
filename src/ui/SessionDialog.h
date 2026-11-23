@@ -21,6 +21,8 @@ public:
     Session session() const;
 
 private:
+    // 主机栏里粘 “账号@主机:端口” 时自动拆到账号/端口/名称里
+    void parseHostField();
     void setupUi();
     void accept() override;
 

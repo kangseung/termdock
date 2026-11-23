@@ -52,12 +52,19 @@ public:
             painter->drawRoundedRect(card, 7, 7);
         }
 
-        // 左侧色点：正在连接的会话用主色，其余用会话自己的颜色
-        const QColor dotColor = active ? Theme::instance().accent()
-                                       : QColor(index.data(kColorRole).toString());
-        painter->setBrush(dotColor.isValid() ? dotColor : Theme::instance().mutedText());
+        // 左侧色点始终是会话自己的标记色：改完颜色立刻能看见（以前“正在连接”的会话
+        // 一律画成主色，改了标记色要重开程序才生效，看着像没保存）
+        // 正在连接改用外面一圈主色描边表示
+        const QColor dotColor(index.data(kColorRole).toString());
+        const QPointF dotCenter(card.left() + 12, card.center().y());
         painter->setPen(Qt::NoPen);
-        painter->drawEllipse(QPointF(card.left() + 12, card.center().y()), 4.0, 4.0);
+        painter->setBrush(dotColor.isValid() ? dotColor : Theme::instance().mutedText());
+        painter->drawEllipse(dotCenter, 4.0, 4.0);
+        if (active) {
+            painter->setBrush(Qt::NoBrush);
+            painter->setPen(QPen(Theme::instance().accent(), 1.6));
+            painter->drawEllipse(dotCenter, 5.8, 5.8);
+        }
 
         QFont nameFont = option.font;
         nameFont.setBold(true);
